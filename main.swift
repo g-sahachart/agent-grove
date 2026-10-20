@@ -19,6 +19,11 @@ struct Agent: Identifiable, Equatable {
     var since: Double?   // ms
     var alive: Bool
     var subId: String? = nil   // ไม่ nil = subagent ที่ agent หลัก (cwd เดียวกัน) เรียกขึ้นมา
+    var runningSince: Double? = nil   // ms: เครื่องมือ (เช่น Bash) รันค้างอยู่นาน → กำลังรอ command
+    var command: String? = nil        // คำสั่ง/คำอธิบายของเครื่องมือที่รออยู่
+
+    /// รอ command = ทำงานอยู่ และเครื่องมือรันมาเกิน 5 วินาที
+    var waitingCommand: Bool { state == .working && runningSince != nil }
 }
 
 struct Project: Identifiable, Equatable {
@@ -65,10 +70,18 @@ func collect() -> [Agent] {
     for f in files where f.hasSuffix(".json") {
         guard let d = readJSON(claudeSessions + "/" + f), pidAlive(d["pid"]) else { continue }
         let cwd = d["cwd"] as? String ?? ""
-        if let sid = d["sessionId"] as? String { sessions.append((cwd, sid)) }
-        agents[cwd] = Agent(name: d["name"] as? String ?? basename(cwd), cwd: cwd, project: projectName(cwd),
-                            state: (d["status"] as? String) == "busy" ? .working : .idle,
-                            since: d["statusUpdatedAt"] as? Double, alive: true)
+        var a = Agent(name: d["name"] as? String ?? basename(cwd), cwd: cwd, project: projectName(cwd),
+                      state: (d["status"] as? String) == "busy" ? .working : .idle,
+                      since: d["statusUpdatedAt"] as? Double, alive: true)
+        if let sid = d["sessionId"] as? String {
+            sessions.append((cwd, sid))
+            if a.state == .working {
+                let t = transcriptTail(projectDir(cwd) + "/\(sid).jsonl")
+                a.tool = t.tool
+                if let since = t.pendingSince { a.runningSince = since; a.command = t.command }
+            }
+        }
+        agents[cwd] = a
     }
 
     let entries = (readJSON(orcaStatus)?["entries"] as? [String: [String: Any]]) ?? [:]
@@ -92,13 +105,21 @@ func collect() -> [Agent] {
         } else if !a.alive, let s = state {
             a.state = s == "working" ? .working : .idle
         }
-        a.tool = p["toolName"] as? String
+        a.tool = p["toolName"] as? String ?? a.tool
+        if (e["hookEventName"] as? String) == "PreToolUse", let at = e["receivedAt"] as? Double {
+            a.runningSince = at; a.command = summarize(p["toolInput"])
+        } else if e["hookEventName"] != nil, a.alive {
+            a.runningSince = nil; a.command = nil   // Orca เห็นแล้วว่าเครื่องมือจบ (PostToolUse/Stop)
+        }
         let prompt = (p["prompt"] as? String ?? "")
             .replacingOccurrences(of: "<[^>]+>", with: "…", options: .regularExpression)
         a.prompt = prompt.isEmpty ? nil : String(prompt.prefix(140))
         if let s = e["stateStartedAt"] as? Double { a.since = s }
         agents[cwd] = a
     }
+
+    // เครื่องมือที่รันยังไม่ถึง 5 วิ = ทำงานปกติ
+    for (k, a) in agents where a.runningSince.map({ nowMs - $0 < 5000 }) ?? false { agents[k]?.runningSince = nil }
 
     // agent หลักเรียงตามชื่อ แต่ละตัวตามด้วย subagent ของมัน
     var out: [Agent] = []
@@ -112,8 +133,7 @@ func collect() -> [Agent] {
 /// subagent ที่กำลังทำงาน: ~/.claude/projects/<cwd เข้ารหัส>/<session>/subagents/**/agent-*.meta.json
 /// ยังไม่มี "finished": true และ transcript ถูกเขียนภายใน 3 นาที (บาง meta ไม่เคยถูกตั้ง finished)
 func runningSubagents(cwd: String, sessionId: String, project: String) -> [Agent] {
-    let enc = String(cwd.unicodeScalars.map { $0.isASCII && CharacterSet.alphanumerics.contains($0) ? Character($0) : "-" })
-    let dir = home + "/.claude/projects/\(enc)/\(sessionId)/subagents"
+    let dir = projectDir(cwd) + "/\(sessionId)/subagents"
     guard let walker = FileManager.default.enumerator(atPath: dir) else { return [] }
     let now = Date()
     var subs: [Agent] = []
@@ -121,29 +141,64 @@ func runningSubagents(cwd: String, sessionId: String, project: String) -> [Agent
         guard rel.hasSuffix(".meta.json") else { continue }
         let log = dir + "/" + rel.dropLast(".meta.json".count) + ".jsonl"
         guard let mtime = (try? FileManager.default.attributesOfItem(atPath: log))?[.modificationDate] as? Date,
-              now.timeIntervalSince(mtime) < 180,
               let meta = readJSON(dir + "/" + rel), (meta["finished"] as? Bool) != true else { continue }
+        // ปกติ: เขียน transcript ภายใน 3 นาที; ถ้ารอ command ค้าง (build/test นานๆ) ยอมถึง 30 นาที
+        let tail = transcriptTail(log), age = now.timeIntervalSince(mtime)
+        guard age < 180 || (tail.pendingSince != nil && age < 1800) else { continue }
         let agentId = basename(String(rel.dropLast(".meta.json".count))).replacingOccurrences(of: "agent-", with: "")
+        let nowMs = now.timeIntervalSince1970 * 1000
         subs.append(Agent(name: meta["description"] as? String ?? meta["agentType"] as? String ?? "subagent",
-                          cwd: cwd, project: project, state: .working, tool: lastTool(log),
+                          cwd: cwd, project: project, state: .working, tool: tail.tool,
                           prompt: meta["agentType"] as? String, since: mtime.timeIntervalSince1970 * 1000,
-                          alive: true, subId: agentId))
+                          alive: true, subId: agentId,
+                          runningSince: tail.pendingSince.flatMap { nowMs - $0 >= 5000 ? $0 : nil },
+                          command: tail.command))
     }
     return subs.sorted { $0.subId! < $1.subId! }
 }
 
-/// ชื่อ tool ล่าสุดใน transcript — อ่านแค่ท้ายไฟล์ 16KB (ไฟล์อาจใหญ่หลาย MB)
-func lastTool(_ path: String) -> String? {
-    guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+func projectDir(_ cwd: String) -> String {
+    let enc = String(cwd.unicodeScalars.map { $0.isASCII && CharacterSet.alphanumerics.contains($0) ? Character($0) : "-" })
+    return home + "/.claude/projects/" + enc
+}
+
+/// ย่อ input ของเครื่องมือให้อ่านง่าย: command / description / ไฟล์ / pattern
+func summarize(_ input: Any?) -> String? {
+    var text: String?
+    if let d = input as? [String: Any] {
+        text = (d["description"] ?? d["command"] ?? d["file_path"] ?? d["pattern"] ?? d["url"] ?? d["query"]) as? String
+    } else if let s = input as? String {
+        // Orca ส่ง toolInput เป็นข้อความ (อาจเป็น JSON)
+        if let data = s.data(using: .utf8), let d = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return summarize(d) }
+        text = s
+    }
+    guard let t = text?.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespaces), !t.isEmpty else { return nil }
+    return String(t.prefix(80))
+}
+
+/// ท้าย transcript (อ่านแค่ 64KB สุดท้าย): เครื่องมือล่าสุด และถ้า tool_use ล่าสุดยังไม่มี tool_result = กำลังรันค้าง
+func transcriptTail(_ path: String) -> (tool: String?, pendingSince: Double?, command: String?) {
+    guard let fh = FileHandle(forReadingAtPath: path) else { return (nil, nil, nil) }
     defer { try? fh.close() }
     let size = (try? fh.seekToEnd()) ?? 0
-    try? fh.seek(toOffset: size > 16384 ? size - 16384 : 0)
-    guard let data = try? fh.readToEnd() else { return nil }
-    let tail = String(decoding: data, as: UTF8.self)
-    let re = try! NSRegularExpression(pattern: #""type":"tool_use","id":"[^"]+","name":"([^"]+)""#)
-    guard let m = re.matches(in: tail, range: NSRange(tail.startIndex..., in: tail)).last,
-          let r = Range(m.range(at: 1), in: tail) else { return nil }
-    return String(tail[r])
+    try? fh.seek(toOffset: size > 65536 ? size - 65536 : 0)
+    guard let data = try? fh.readToEnd() else { return (nil, nil, nil) }
+    let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var tool: String?
+    for line in String(decoding: data, as: UTF8.self).split(separator: "\n").reversed() {
+        guard line.contains("\"message\""), let d = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+              let type = d["type"] as? String, type == "assistant" || type == "user",
+              let content = (d["message"] as? [String: Any])?["content"] as? [[String: Any]] else { continue }
+        if type == "user" {
+            if content.contains(where: { $0["type"] as? String == "tool_result" }) { return (tool, nil, nil) }   // เครื่องมือจบแล้ว
+            continue
+        }
+        guard let use = content.last(where: { $0["type"] as? String == "tool_use" }) else { return (tool, nil, nil) }
+        tool = use["name"] as? String
+        let at = (d["timestamp"] as? String).flatMap { iso.date(from: $0) }.map { $0.timeIntervalSince1970 * 1000 }
+        return (tool, at, summarize(use["input"]))
+    }
+    return (tool, nil, nil)
 }
 
 func group(_ agents: [Agent]) -> [Project] {
@@ -197,9 +252,12 @@ final class Zoo: ObservableObject {
     var mainCount: Int { agents.filter { $0.subId == nil }.count }
     var helperCount: Int { agents.count - mainCount }
 
+    var commandCount: Int { agents.filter(\.waitingCommand).count }
+
     var menuTitle: String {
         var t = "🐾 \(count(.working))"
         if helperCount > 0 { t += "+\(helperCount)" }
+        if commandCount > 0 { t += " ⏳\(commandCount)" }
         if count(.blocked) > 0 { t += " ❗\(count(.blocked))" }
         if count(.waiting) > 0 { t += " ❓\(count(.waiting))" }
         return t
@@ -517,7 +575,7 @@ final class AgentLayer {
     let root = CALayer(), body = CALayer(), badge = CALayer()
     var critter: Critter
     var state: AgentState?
-    var spot: CGPoint?, tool: String?, looping = false   // ค่าล่าสุดที่วาง — ไม่เปลี่ยน = ไม่แตะ animation
+    var spot: CGPoint?, tool: String?, looping = false, running = false   // ค่าล่าสุดที่วาง — ไม่เปลี่ยน = ไม่แตะ animation
     var rest = RestPose.random(), shownRest: RestPose?    // ท่าพักในห้องนั่งเล่น (สุ่มเปลี่ยนเป็นระยะ)
     var agent: Agent?
 
@@ -549,7 +607,8 @@ final class AgentLayer {
         badge.contents = img
         guard let img else { badge.bounds = .zero; return }
         badge.bounds = CGRect(x: 0, y: 0, width: CGFloat(img.width) * height / CGFloat(img.height), height: height)
-        badge.position = CGPoint(x: 10, y: body.bounds.height + 2)
+        badge.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        badge.position = CGPoint(x: 10, y: body.bounds.height + 2 + height / 2)
     }
 }
 
@@ -1032,11 +1091,12 @@ final class VillageLayerView: NSView {
     }
 
     private func apply(_ a: Agent, _ al: AgentLayer, spot: CGPoint, walking: Bool) {
-        if al.state == a.state && al.spot == spot && al.tool == a.tool && al.looping == animate
+        if al.state == a.state && al.spot == spot && al.tool == a.tool && al.looping == animate && al.running == a.waitingCommand
             && (a.state != .idle || al.shownRest == al.rest) { return }
         if a.state == .idle && al.state != .idle { al.rest = .random() }   // เพิ่งกลับมาพัก → สุ่มท่าใหม่
         al.agent = a; al.shownRest = a.state == .idle ? al.rest : nil
         let moved = al.spot.map { $0 != spot } ?? false
+        al.running = a.waitingCommand
         al.spot = spot; al.tool = a.tool; al.looping = animate
         let c = al.critter
         let fromLayer = al.root.presentation()?.position ?? al.root.position
@@ -1065,6 +1125,7 @@ final class VillageLayerView: NSView {
             case .sit(let icon): al.setBadge(pixelEmoji(icon, 44), height: 18)
             case .stretch: al.setBadge(nil, height: 0)
             }
+        case .working where a.waitingCommand: al.setBadge(pixelEmoji("⏳", 44), height: 20)   // รอ command
         case .working: al.setBadge(toolProp(a.tool).flatMap { sprite($0) }, height: 20)
         default: al.setBadge(nil, height: 0)
         }
@@ -1126,6 +1187,12 @@ final class VillageLayerView: NSView {
         let start = CACurrentMediaTime() + delay
         func add(_ l: CALayer, _ anim: CAAnimation) { anim.beginTime = start; l.add(anim, forKey: "loop") }
         switch a.state {
+        case .working where a.waitingCommand:   // นั่งรอนิ่งๆ โยกตัวช้าๆ + นาฬิกาทรายพลิกกลับไปมา
+            add(al.body, loop([basic("transform.rotation.z", -0.025, 0.025)], 2.2))
+            let flip = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+            flip.values = [0, 0, Double.pi, Double.pi]; flip.keyTimes = [0, 0.4, 0.5, 1]
+            flip.duration = 2.4; flip.repeatCount = .infinity; flip.isAdditive = true
+            add(al.badge, flip)
         case .working:
             add(al.body, loop([basic("transform.translation.y", 0, 3)], 0.45))
             add(al.badge, loop([basic("transform.translation.y", 0, 4)], 0.6))
@@ -1207,8 +1274,13 @@ struct AgentRow: View {
             if let t = thumb(critter.stand) { Image(nsImage: t).interpolation(.none).scaleEffect(agent.subId != nil ? 0.8 : 1) }
             Text(agent.name).fontWeight(agent.subId != nil ? .regular : .medium).lineLimit(1).help(agent.cwd)
             Text(agent.state.label).foregroundStyle(agent.state.color).fontWeight(.semibold)
-            if agent.state == .working, let t = agent.tool { Text(t).foregroundStyle(.secondary).lineLimit(1) }
-            Text(agent.prompt.map { "“\($0)”" } ?? "").foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            if agent.waitingCommand, let since = agent.runningSince {
+                Text("⏳ รอ \(agent.tool ?? "command") \(ago(since, now))").foregroundStyle(.orange).fontWeight(.medium).lineLimit(1)
+                if let c = agent.command { Text(c).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1) }
+            } else if agent.state == .working, let t = agent.tool { Text(t).foregroundStyle(.secondary).lineLimit(1) }
+            if !agent.waitingCommand {
+                Text(agent.prompt.map { "“\($0)”" } ?? "").foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            }
             Spacer(minLength: 4)
             Text(ago(agent.since, now)).foregroundStyle(.secondary).monospacedDigit()
         }
@@ -1226,7 +1298,7 @@ struct ZooView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text("🌿 Agent Grove").font(.system(size: 20, weight: .bold))
                         if !zoo.agents.isEmpty {
-                            Text(LocalizedStringKey("**\(zoo.projects.count)** โปรเจกต์ · **\(zoo.mainCount)** ตัว\(zoo.helperCount > 0 ? " + ผู้ช่วย **\(zoo.helperCount)**" : "") · ทำงาน **\(zoo.count(.working))** · รออนุญาต **\(zoo.count(.blocked))** · รอคำสั่ง **\(zoo.count(.waiting))** · พัก **\(zoo.count(.idle))**"))
+                            Text(LocalizedStringKey("**\(zoo.projects.count)** โปรเจกต์ · **\(zoo.mainCount)** ตัว\(zoo.helperCount > 0 ? " + ผู้ช่วย **\(zoo.helperCount)**" : "") · ทำงาน **\(zoo.count(.working))**\(zoo.commandCount > 0 ? " (รอ command **\(zoo.commandCount)**)" : "") · รออนุญาต **\(zoo.count(.blocked))** · รอคำสั่ง **\(zoo.count(.waiting))** · พัก **\(zoo.count(.idle))**"))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -1282,6 +1354,15 @@ struct AgentGroveApp: App {
     @StateObject private var zoo = Zoo()
 
     init() {
+        // AGENT_GROVE_LIST=1 → พิมพ์สถานะ agent ที่อ่านได้ (ไว้ตรวจแหล่งข้อมูล) แล้วออก
+        if ProcessInfo.processInfo.environment["AGENT_GROVE_LIST"] != nil {
+            let now = Date().timeIntervalSince1970 * 1000
+            for a in collect() {
+                let wait = a.runningSince.map { " ⏳\(Int((now - $0) / 1000))s \(a.command ?? "")" } ?? ""
+                print("\(a.subId == nil ? "" : "  ↳ ")\(a.name)  \(a.state.rawValue)  \(a.tool ?? "-")\(wait)")
+            }
+            exit(0)
+        }
         // AGENT_GROVE_SNAPSHOT=out.png → เรนเดอร์ฉากหมู่บ้านเป็นรูป (ไว้ตรวจหน้าตา) แล้วออก
         if let out = ProcessInfo.processInfo.environment["AGENT_GROVE_SNAPSHOT"] {
             MainActor.assumeIsolated {
