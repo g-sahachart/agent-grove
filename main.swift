@@ -159,6 +159,13 @@ final class Zoo: ObservableObject {
     @Published private(set) var projects: [Project] = []
     @Published private(set) var now = Date()
     @Published var windowVisible = true
+    @Published var mode = AnimalMode.saved {
+        didSet {
+            guard mode != oldValue else { return }
+            AnimalMode.saved = mode
+            (critters, babies) = loadCritters(mode); borrowed = [:]; critterOf = [:]
+        }
+    }
     private var timer: Timer?
 
     private let io = DispatchQueue(label: "agentzoo.io", qos: .utility)
@@ -213,18 +220,41 @@ struct Critter {
 ///   <ชื่อ>_alert               ตกใจ (รออนุญาต)
 ///   <ชื่อ>_sleep / <ชื่อ>_sit  พักผ่อน (ใช้ sleep ก่อน)
 ///   baby_<ชื่อ>_stand  ตัวเล็ก ใช้เป็น subagent
-let (critters, babies): ([Critter], [Critter]) = {
-    let dir = Bundle.main.resourcePath.map { $0 + "/Sprites" } ?? ""
+/// โหมดตัวละคร: สัตว์รวม (Sprites/) หรือสุนัขหลายสายพันธุ์ (Sprites/dogs/)
+/// ฉาก เฟอร์นิเจอร์ และของในมือใช้ Sprites/ ร่วมกันทุกโหมด
+enum AnimalMode: String, CaseIterable, Identifiable {
+    case all, dogs
+    var id: String { rawValue }
+    var label: String { self == .all ? "🐾 สัตว์รวม" : "🐕 สุนัข" }
+    var folder: String { self == .all ? "Sprites" : "Sprites/dogs" }
+    static var saved: AnimalMode {
+        get { AnimalMode(rawValue: UserDefaults.standard.string(forKey: "animalMode") ?? "") ?? .all }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "animalMode") }
+    }
+}
+
+/// อ่านสัตว์ทั้งหมดในโฟลเดอร์ของโหมด (ชื่อ Critter = "<โฟลเดอร์>/<ชื่อ>" เพื่อให้ sprite() หาไฟล์ถูกโฟลเดอร์)
+func loadCritters(_ mode: AnimalMode) -> ([Critter], [Critter]) {
+    let dir = Bundle.main.resourcePath.map { $0 + "/" + mode.folder } ?? ""
     let files = Set(((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
         .filter { $0.hasSuffix(".png") }.map { String($0.dropLast(4)) })
-    func has(_ n: String) -> String? { files.contains(n) ? n : nil }
+    let prefix = mode == .all ? "" : "dogs/"
+    func has(_ n: String) -> String? { files.contains(n) ? prefix + n : nil }
     let all = files.filter { $0.hasSuffix("_stand") }.map { String($0.dropLast(6)) }.sorted().map {
-        Critter(name: $0, walk: has($0 + "_walk"), walk2: has($0 + "_walk2"), alert: has($0 + "_alert"),
+        Critter(name: prefix + $0, walk: has($0 + "_walk"), walk2: has($0 + "_walk2"), alert: has($0 + "_alert"),
                 sleep: has($0 + "_sleep"), sit: has($0 + "_sit"))
     }
-    let adults = all.filter { !$0.name.hasPrefix("baby_") }, kids = all.filter { $0.name.hasPrefix("baby_") }
+    let adults = all.filter { !$0.name.contains("baby_") }, kids = all.filter { $0.name.contains("baby_") }
+    if adults.isEmpty && mode == .dogs {
+        // ยังไม่มีภาพชุดสุนัข → ใช้หมา/หมาป่าจากชุดรวมไปก่อน
+        let base = loadCritters(.all)
+        let dogs = base.0.filter { ["dog", "wolf"].contains($0.name) }
+        return (dogs.isEmpty ? base.0 : dogs, base.1)
+    }
     return (adults.isEmpty ? [Critter(name: "cat")] : adults, kids.isEmpty ? adults : kids)
-}()
+}
+
+var (critters, babies) = loadCritters(AnimalMode.saved)
 
 func hashKey(_ s: String) -> Int { Int(s.unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value } % 9973) }
 
@@ -257,7 +287,9 @@ func critter(for agent: Agent, in project: Project) -> Critter {
 var imageCache: [String: CGImage] = [:]
 func sprite(_ name: String) -> CGImage? {
     if let img = imageCache[name] { return img }
-    guard let url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "Sprites"),
+    // name อาจมีโฟลเดอร์ย่อย เช่น "dogs/shiba_stand" → Sprites/dogs/shiba_stand.png
+    let sub = (name as NSString).deletingLastPathComponent, file = (name as NSString).lastPathComponent
+    guard let url = Bundle.main.url(forResource: file, withExtension: "png", subdirectory: sub.isEmpty ? "Sprites" : "Sprites/" + sub),
           let src = CGImageSourceCreateWithURL(url as CFURL, nil),
           let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
     imageCache[name] = img
@@ -415,8 +447,9 @@ enum Village {
 struct VillageView: NSViewRepresentable {
     let projects: [Project]
     let animate: Bool
+    var mode = AnimalMode.saved
     func makeNSView(context: Context) -> VillageLayerView { VillageLayerView() }
-    func updateNSView(_ v: VillageLayerView, context: Context) { v.update(projects, animate: animate) }
+    func updateNSView(_ v: VillageLayerView, context: Context) { v.update(projects, animate: animate, mode: mode) }
 }
 
 /// emoji วาดเล็กๆ แล้วขยายแบบ nearest → ได้ลุค pixel art เข้ากับ sprite
@@ -565,8 +598,17 @@ final class VillageLayerView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(_ projects: [Project], animate: Bool) {
+    private var mode = AnimalMode.saved
+
+    func update(_ projects: [Project], animate: Bool, mode: AnimalMode = AnimalMode.saved) {
         let motion = animate && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if mode != self.mode {   // เปลี่ยนโหมด → ล้างสัตว์ทั้งหมดแล้ววางชุดใหม่ทันที
+            self.mode = mode
+            agents.values.forEach { $0.root.removeFromSuperlayer() }
+            agents = [:]; seats = [:]; owner = [:]; animalOf = [:]; leaving = []
+            self.projects = projects; self.animate = motion
+            place(walking: false); return
+        }
         guard projects != self.projects || motion != self.animate else { return }
         self.projects = projects; self.animate = motion
         place(walking: motion)
@@ -1189,11 +1231,18 @@ struct ZooView: View {
                         }
                     }
                     .padding([.horizontal, .top], 20)
+                    .overlay(alignment: .topTrailing) {
+                        Picker("", selection: $zoo.mode) {
+                            ForEach(AnimalMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        .padding([.trailing, .top], 16)
+                    }
 
                     if zoo.agents.isEmpty {
                         Text("ไม่มี agent ทำงานอยู่ — หมู่บ้านเงียบ 🌱").foregroundStyle(.secondary).padding(20)
                     } else {
-                        VillageView(projects: zoo.projects, animate: zoo.windowVisible)
+                        VillageView(projects: zoo.projects, animate: zoo.windowVisible, mode: zoo.mode)
                             .frame(height: Village.height(geo.size.width - 24, zoo.projects))
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                             .padding(.horizontal, 12).padding(.vertical, 10)
@@ -1242,10 +1291,12 @@ struct AgentGroveApp: App {
                     agents = (0..<24).map { k in Agent(name: "agent-\(k)", cwd: "/demo/\(k)", project: "proj-\(k / 3)",
                                                        state: states[k % states.count], tool: ["Read", "Bash", "Grep", "Edit"][k % 4], alive: true) }
                 }
+                let mode = AnimalMode(rawValue: ProcessInfo.processInfo.environment["AGENT_GROVE_MODE"] ?? "") ?? AnimalMode.saved
+                (critters, babies) = loadCritters(mode)
                 let projects = group(agents), w: CGFloat = 900, h = Village.height(w, projects)
                 let v = VillageLayerView(frame: NSRect(x: 0, y: 0, width: w, height: h))
                 v.layer!.backgroundColor = NSColor(red: 0.87, green: 0.95, blue: 1, alpha: 1).cgColor
-                v.update(projects, animate: false)
+                v.update(projects, animate: false, mode: mode)
                 v.layer!.sublayers = v.layer!.sublayers?.sorted { $0.zPosition < $1.zPosition }  // render(in:) ไม่สน zPosition
                 let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w * 2), pixelsHigh: Int(h * 2), bitsPerSample: 8,
                                            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
@@ -1281,6 +1332,10 @@ struct MenuContent: View {
 
     var body: some View {
         Text("ทำงาน \(zoo.count(.working)) · รออนุญาต \(zoo.count(.blocked)) · รอคำสั่ง \(zoo.count(.waiting)) · ทั้งหมด \(zoo.agents.count)")
+        Divider()
+        Picker("ตัวละคร", selection: $zoo.mode) {
+            ForEach(AnimalMode.allCases) { Text($0.label).tag($0) }
+        }
         Divider()
         Button("เปิด Agent Grove") {
             NSApp.activate(ignoringOtherApps: true)

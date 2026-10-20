@@ -50,6 +50,17 @@ SwiftUI + Core Animation ล้วน ไม่มี WebKit / ไม่มี d
 
 ท่าที่ไม่มีจะใช้ท่ายืนแทน
 
+### โหมดตัวละคร
+
+สลับได้จากปุ่มมุมขวาบนของหน้าต่าง หรือเมนูบน menu bar (แอปจำโหมดที่เลือกไว้)
+
+| โหมด | โฟลเดอร์ภาพ |
+|---|---|
+| 🐾 สัตว์รวม | `Sprites/` |
+| 🐕 สุนัข | `Sprites/dogs/` (ตั้งชื่อไฟล์แบบเดียวกัน; ยังไม่มีภาพ → ใช้หมา/หมาป่าจากชุดรวมไปก่อน) |
+
+ฉาก เฟอร์นิเจอร์ และของในมือใช้ `Sprites/` ร่วมกันทุกโหมด
+
 ### ตัดภาพจาก sprite sheet
 
 สร้างภาพพื้นสีม่วงชมพูล้วน `#FF00FF` จัดเป็นตาราง (เช่น 6 ท่า × 4 สัตว์) แล้ว:
@@ -71,6 +82,7 @@ python3 tools/cut_magenta.py sheet.jpeg Sprites \
 ```sh
 AGENT_GROVE_SNAPSHOT=/tmp/shot.png "build/Agent Grove.app/Contents/MacOS/AgentGrove"                  # ข้อมูลจริง
 AGENT_GROVE_SNAPSHOT=/tmp/demo.png AGENT_GROVE_DEMO=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove" # ข้อมูลจำลอง 24 ตัว
+AGENT_GROVE_SNAPSHOT=/tmp/dogs.png AGENT_GROVE_MODE=dogs "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # โหมดสุนัข
 ```
 
 ## โครงสร้าง

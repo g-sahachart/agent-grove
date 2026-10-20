@@ -31,3 +31,16 @@ python3 cut_magenta.py --grid=4x3 "$DL/Gemini_Generated_Image_rp20xprp20xprp20 (
   sofa_orange sofa_blue beanbag coffee_table rug bookshelf lamp tv_cabinet window picture console plant_big
 python3 cut_magenta.py "$DL/Gemini_Generated_Image_rp20xprp20xprp20 (4).jpeg" "$OUT" \
   item_laptop item_book item_magnifier item_toolbox item_clipboard item_globe item_terminal item_pencil item_folder item_plug item_robot item_bulb
+
+# ── โหมดสุนัข (Sprites/dogs) ── ใส่ชื่อไฟล์ภาพแต่ละชุดแล้วเอา # ออก
+# DOGS=$OUT/dogs
+# animals_to() { local f=$1 out=$2; shift 2; local names=(); for a in "$@"; do for p in $P; do names+=("${a}_$p"); done; done; python3 cut_magenta.py "$DL/$f" "$out" $names; }
+# animals_to <ชุด1.jpeg> $DOGS shiba corgi golden labrador
+# animals_to <ชุด2.jpeg> $DOGS husky shepherd bordercollie samoyed
+# animals_to <ชุด3.jpeg> $DOGS pug frenchie bulldog bostonterrier
+# animals_to <ชุด4.jpeg> $DOGS chihuahua pomeranian yorkie maltese
+# animals_to <ชุด5.jpeg> $DOGS dachshund beagle jackrussell basset
+# animals_to <ชุด6.jpeg> $DOGS poodle bichon shihtzu cavalier
+# animals_to <ชุด7.jpeg> $DOGS dalmatian doberman greatdane stbernard
+# animals_to <ชุด8.jpeg> $DOGS akita chowchow thairidgeback bangkaew
+# python3 cut_magenta.py "$DL/<ลูกหมา.jpeg>" $DOGS $(for p in stand walk walk2; do for b in shiba corgi golden husky pug dalmatian; do echo baby_${b}_$p; done; done)
