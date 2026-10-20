@@ -929,22 +929,29 @@ final class VillageLayerView: NSView {
             apply(a, al, spot: spot, walking: walking && al.spot != nil)
         }
 
-        // ป้ายชื่อ (ห้องทำงานเท่านั้น): ต่อกลุ่มคนโปรเจกต์เดียวกันที่นั่งติดกัน; กลุ่มถัดไปในแถวเหลื่อมลง ไม่ทับกัน
-        let mine = seats.filter { $0.value.hall }.sorted { $0.value.k < $1.value.k }
-        var runs: [[(id: String, k: Int)]] = []
-        for (id, s) in mine {
-            if let last = runs.last?.last, neighbors(last.k, hall: true).contains(s.k), projectOf[last.id] == projectOf[id] {
-                runs[runs.count - 1].append((id, s.k))
-            } else { runs.append([(id, s.k)]) }
+        // ป้ายชื่อ (ห้องทำงานเท่านั้น): หนึ่งป้ายต่อโปรเจกต์ต่อแถวที่นั่ง (โต๊ะ + ฝั่งหน้า/หลัง)
+        // วางเป็นเลน: ถ้าชนป้ายข้างๆ ในแถวเดียวกัน → ลงเลนถัดไป (แถวหน้าเลื่อนลง, แถวหลังเลื่อนขึ้น)
+        var lines: [String: [(name: String, color: NSColor, xs: [CGFloat], d: (p: CGPoint, front: Bool, table: Int))]] = [:]
+        for (aid, s) in seats where s.hall {
+            guard let key = projectOf[aid], let (color, name) = colorOf[key] else { continue }
+            let d = L.hall.seat(s.k), line = "\(d.table)-\(d.front)"
+            if let i = lines[line]?.firstIndex(where: { $0.name == name }) { lines[line]![i].xs.append(d.p.x) }
+            else { lines[line, default: []].append((name, color, [d.p.x], d)) }
         }
-        var lastSeg = -1, stagger = 0
-        for run in runs {
-            guard let key = projectOf[run[0].id], let (color, name) = colorOf[key] else { continue }
-            let seg = run[0].k / L.hall.perSide
-            stagger = seg == lastSeg ? stagger + 1 : 0; lastSeg = seg
-            let dz: CGFloat = stagger % 2 == 0 ? 0 : 14
-            let ds = run.map { L.hall.seat($0.k) }
-            tag(name, color: color, xs: ds.map(\.p.x), top: ds[0].front ? ds[0].p.y + 6 + dz : L.hall.tableBase(ds[0].table) - 44 + dz)
+        let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        for groups in lines.values {
+            var laneRight: [CGFloat] = []
+            for g in groups.sorted(by: { $0.xs.min()! < $1.xs.min()! }) {
+                let cx = (g.xs.min()! + g.xs.max()!) / 2
+                let w = min(130, (" \(g.name) " as NSString).size(withAttributes: [.font: font]).width + 12)
+                let lane = laneRight.firstIndex { $0 + 4 <= cx - w / 2 } ?? laneRight.count
+                if lane == laneRight.count { laneRight.append(-.infinity) }
+                laneRight[lane] = cx + w / 2
+                let d = g.d, step: CGFloat = 16
+                let top = d.front ? d.p.y + 6 + CGFloat(lane) * step                     // ใต้เท้าแถวหน้า
+                                  : L.hall.tableBase(d.table) - 44 - CGFloat(lane) * step  // บนโต๊ะ (แถวหลัง)
+                tag(g.name, color: g.color, x: cx, width: w, top: top)
+            }
         }
     }
 
@@ -956,10 +963,13 @@ final class VillageLayerView: NSView {
         layer?.addSublayer(m); marks.append(m)
     }
 
-    private func tag(_ name: String, color: NSColor, xs: [CGFloat], top: CGFloat) {
-        let t = signLayer(fontSize: 9); setSign(t, name, maxWidth: max(70, xs.max()! - xs.min()! + 30))
-        t.backgroundColor = color.blended(withFraction: 0.25, of: .black)!.cgColor; t.borderWidth = 0
-        t.position = P(CGPoint(x: (xs.min()! + xs.max()!) / 2, y: top)); t.zPosition = 85
+    private func tag(_ name: String, color: NSColor, x: CGFloat, width: CGFloat, top: CGFloat) {
+        let t = signLayer(fontSize: 10); t.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        t.string = " \(name) "; t.bounds = CGRect(x: 0, y: 0, width: width, height: 15)
+        t.backgroundColor = color.blended(withFraction: 0.3, of: .black)!.cgColor
+        t.borderWidth = 1; t.borderColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        t.shadowOpacity = 0.35; t.shadowRadius = 1.5; t.shadowOffset = CGSize(width: 0, height: -1)
+        t.position = P(CGPoint(x: x, y: top)); t.zPosition = 85
         layer?.addSublayer(t); marks.append(t)
     }
 
