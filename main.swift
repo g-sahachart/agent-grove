@@ -658,7 +658,37 @@ func pixelEmoji(_ s: String, _ px: Int) -> CGImage? {
 
 /// ฉากใช้ภาพจาก Sprites/space/ แทนถ้ามีชื่อเดียวกัน (ยังไม่มี → ใช้ของเดิม)
 @MainActor func themed(_ name: String) -> String {
-    AnimalMode.current == .space && sprite("space/" + name) != nil ? "space/" + name : name
+    let m = AnimalMode.current
+    return m != .all && sprite(m.rawValue + "/" + name) != nil ? m.rawValue + "/" + name : name
+}
+
+/// วาดภาพหนึ่งภาพด้วย CGContext (พิกัด top-left แบบเดียวกับฉาก) — ของนิ่งจำนวนมากรวมเป็นภาพเดียว ประหยัด layer
+func paint(_ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
+    let w = Int(size.width * 2), h = Int(size.height * 2)
+    guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                           space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 2, y: -2)
+    draw(ctx)
+    return ctx.makeImage()
+}
+
+/// รอยเท้าหมา: ฝ่าเท้า + นิ้ว 4 นิ้ว (ศูนย์กลาง x,y ขนาด s)
+func pawPrint(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ s: CGFloat) {
+    ctx.fillEllipse(in: CGRect(x: x - s * 0.45, y: y - s * 0.1, width: s * 0.9, height: s * 0.7))
+    for (dx, dy) in [(-0.5, -0.45), (-0.18, -0.65), (0.18, -0.65), (0.5, -0.45)] {
+        ctx.fillEllipse(in: CGRect(x: x + s * CGFloat(dx) - s * 0.14, y: y + s * CGFloat(dy) - s * 0.14, width: s * 0.28, height: s * 0.3))
+    }
+}
+
+/// ลายกระเบื้องตารางหมากรุก (สองสี) เป็นสี pattern ใส่ใน layer เดียว
+func checker(_ a: NSColor, _ b: NSColor, _ cell: CGFloat) -> NSColor {
+    let img = NSImage(size: NSSize(width: cell * 2, height: cell * 2), flipped: false) { _ in
+        a.setFill(); NSRect(x: 0, y: 0, width: cell * 2, height: cell * 2).fill()
+        b.setFill(); NSRect(x: 0, y: 0, width: cell, height: cell).fill(); NSRect(x: cell, y: cell, width: cell, height: cell).fill()
+        return true
+    }
+    return NSColor(patternImage: img)
 }
 
 /// ดาวทั้งหมดวาดลงภาพเดียว (ไม่ใช่หลายร้อย layer) — สร้างใหม่เฉพาะตอนขนาดเปลี่ยน
@@ -888,11 +918,14 @@ final class VillageLayerView: NSView {
         func c(_ day: (CGFloat, CGFloat, CGFloat), _ night: (CGFloat, CGFloat, CGFloat)) -> NSColor {
             let v = n ? night : day; return NSColor(red: v.0, green: v.1, blue: v.2, alpha: 1)
         }
-        let space = mode == .space
-        // สีของฉาก: ป่า = ไม้ซุง/ทางดิน, อวกาศ = แผ่นเหล็ก/ท่อเชื่อม
-        let corridor = space ? c((0.3, 0.33, 0.42), (0.17, 0.18, 0.25)) : c((0.62, 0.48, 0.32), (0.27, 0.21, 0.15))
-        let wall = space ? c((0.42, 0.46, 0.56), (0.22, 0.24, 0.32)) : c((0.55, 0.37, 0.21), (0.3, 0.2, 0.12))
-        let wallTop = space ? c((0.24, 0.27, 0.35), (0.12, 0.13, 0.19)) : c((0.4, 0.25, 0.13), (0.22, 0.14, 0.08))
+        let space = mode == .space, park = mode == .dogs
+        // สีของฉาก: ป่า = ไม้ซุง/ทางดิน, อวกาศ = แผ่นเหล็ก/ท่อเชื่อม, สวนสุนัข = ผนังพาสเทล/ทางเดินลายรอยเท้า
+        let corridor = space ? c((0.3, 0.33, 0.42), (0.17, 0.18, 0.25)) : park ? c((0.93, 0.86, 0.7), (0.38, 0.34, 0.27))
+                             : c((0.62, 0.48, 0.32), (0.27, 0.21, 0.15))
+        let wall = space ? c((0.42, 0.46, 0.56), (0.22, 0.24, 0.32)) : park ? c((1, 0.88, 0.62), (0.42, 0.37, 0.26))
+                         : c((0.55, 0.37, 0.21), (0.3, 0.2, 0.12))
+        let wallTop = space ? c((0.24, 0.27, 0.35), (0.12, 0.13, 0.19)) : park ? c((0.96, 0.96, 0.93), (0.5, 0.5, 0.48))
+                            : c((0.4, 0.25, 0.13), (0.22, 0.14, 0.08))
         let glow = NSColor(red: 0.35, green: 0.9, blue: 1, alpha: 1)   // ไฟ cyan ของสถานี
         var rng = UInt32(4242)
         func rand(_ k: Int) -> Int { rng = rng &* 1103515245 &+ 12345; return Int((rng >> 16) % UInt32(max(1, k))) }
@@ -960,6 +993,63 @@ final class VillageLayerView: NSView {
                     f.add(blink, forKey: "twinkle"); add(f, z: -2.1)
                 }
             }
+        } else if park {
+            // 🐾 สวนสุนัข: สนามหญ้า + รั้วไม้ขาวล้อมรอบ + ทางเดินลายรอยเท้า + ของเล่นหมาวางรอบสวน
+            root.backgroundColor = c((0.55, 0.78, 0.42), (0.13, 0.24, 0.15)).cgColor
+            let grassDark = c((0.47, 0.7, 0.36), (0.1, 0.2, 0.12)), grassLight = c((0.64, 0.85, 0.5), (0.17, 0.29, 0.19))
+            let picket = c((1, 1, 0.97), (0.62, 0.62, 0.6)), pawColor = c((0.8, 0.68, 0.5), (0.3, 0.27, 0.21))
+            let W = bounds.width, H = L.height, fenceTop: CGFloat = 54, fenceBottom = H - 16
+            var r2 = UInt32(77)
+            func rr(_ k: Int) -> CGFloat { r2 = r2 &* 1103515245 &+ 12345; return CGFloat((r2 >> 16) % UInt32(max(1, k))) }
+            let ground = CALayer(); ground.frame = bounds
+            ground.contents = paint(CGSize(width: W, height: bounds.height)) { ctx in
+                for _ in 0..<Int(W * H / 700) {   // ใบหญ้า
+                    ctx.setFillColor((rr(2) == 0 ? grassDark : grassLight).cgColor)
+                    ctx.fill(CGRect(x: rr(Int(W)), y: rr(Int(H)), width: 2, height: 3 + rr(3)))
+                }
+                // ทางเดินกลาง + รอยเท้าเดินสลับซ้ายขวา
+                ctx.setFillColor(corridor.cgColor)
+                ctx.addPath(CGPath(roundedRect: CGRect(x: L.corridorX - cw / 2 + 4, y: L.lounge.top - 20, width: cw - 8, height: H - L.lounge.top),
+                                   cornerWidth: 8, cornerHeight: 8, transform: nil)); ctx.fillPath()
+                ctx.setFillColor(pawColor.cgColor)
+                var py = L.lounge.top, k = 0
+                while py < H - 30 { pawPrint(ctx, L.corridorX + (k % 2 == 0 ? -6 : 6), py, 9); py += 22; k += 1 }
+                // รั้วไม้ระแนงขาว: เสาปลายแหลม + ราวสองเส้น (บน/ล่าง/ข้าง)
+                ctx.setFillColor(picket.cgColor)
+                func pickets(y: CGFloat) {
+                    var x: CGFloat = 4
+                    while x < W - 4 {
+                        if abs(x - L.corridorX) > cw / 2 {   // เว้นช่องประตูรั้วตรงทางเดิน
+                            ctx.fill(CGRect(x: x, y: y - 12, width: 5, height: 14))
+                            ctx.move(to: CGPoint(x: x, y: y - 12)); ctx.addLine(to: CGPoint(x: x + 2.5, y: y - 16))
+                            ctx.addLine(to: CGPoint(x: x + 5, y: y - 12)); ctx.fillPath()
+                        }
+                        x += 9
+                    }
+                    for ry in [y - 9, y - 3] { ctx.fill(CGRect(x: 4, y: ry, width: W - 8, height: 2)) }
+                }
+                pickets(y: fenceTop); pickets(y: fenceBottom)
+                for x in [CGFloat(10), W - 14] {
+                    var y = fenceTop
+                    while y < fenceBottom { ctx.fill(CGRect(x: x, y: y, width: 4, height: 6)); y += 9 }
+                    ctx.fill(CGRect(x: x + 1, y: fenceTop, width: 2, height: fenceBottom - fenceTop))
+                }
+            }
+            add(ground, z: -2)
+            // พุ่มไม้/บ้านหมาหลังรั้ว + ของเล่นหมาในสนาม
+            var bx: CGFloat = 10
+            while bx < W {
+                deco(rand(5) == 0 ? "🏠" : ["🌳", "🌲", "🌳"][rand(3)], px: 16, h: 34 + CGFloat(rand(10)), x: bx, top: 40 + CGFloat(rand(6)), z: -1.5)
+                bx += 46 + CGFloat(rand(20))
+            }
+            for _ in 0..<Int(W / 34) {
+                let side = VillageLayout.side
+                let x = [L.corridorX - cw / 2 - 4, L.corridorX + cw / 2 + 4, 18 + CGFloat(rand(Int(side - 18))), W - 18 - CGFloat(rand(Int(side - 18))),
+                         CGFloat(rand(Int(W)))][rand(5)]
+                let t = x > 40 && x < W - 40 && abs(x - L.corridorX) > cw ? [fenceTop + 8 + CGFloat(rand(10)), H - 34 - CGFloat(rand(10))][rand(2)]
+                                                                         : L.lounge.top + CGFloat(rand(Int(H - L.lounge.top - 40)))
+                deco(["🎾", "🦴", "🥏", "🌷", "🌼", "🌼", "🎾"][rand(7)], px: 10, h: 13, x: x, top: t, z: depth(t) + 45)
+            }
         } else {
             root.backgroundColor = c((0.42, 0.6, 0.32), (0.1, 0.19, 0.13)).cgColor
             // 🌲 ธีมป่า: พื้นหญ้า + ทางดิน + กระท่อมไม้ซุง (โหมดมืด = ป่ากลางคืน + หิ่งห้อย)
@@ -1005,7 +1095,9 @@ final class VillageLayerView: NSView {
                 let t = [L.lounge.top + CGFloat(rand(Int(L.height - L.lounge.top - 20))), L.lounge.top - 6 - CGFloat(rand(8)), L.height - 30 - CGFloat(rand(10))][rand(3)]
                 deco(["🍄", "🌼", "🌿", "🪨", "🌸", "🍀"][rand(6)], px: 10, h: 14, x: x, top: t, z: depth(t) + 45)
             }
-            // หิ่งห้อยตอนกลางคืน: กะพริบช้าๆ (Core Animation วาดเอง)
+        }
+        if !space {
+            // หิ่งห้อยตอนกลางคืน (ป่า/สวน): กะพริบช้าๆ (Core Animation วาดเอง)
             if n && animate {
                 for k in 0..<10 {
                     let f = CALayer(); f.bounds = CGRect(x: 0, y: 0, width: 3, height: 3); f.cornerRadius = 1.5
@@ -1024,20 +1116,24 @@ final class VillageLayerView: NSView {
         }
 
         /// ห้อง: พื้น + ผนังหลัง + ผนังข้าง/หน้า (เว้นประตูที่ด้าน doorSide)
-        func room(left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat, floor: NSColor, doorY: CGFloat, doorOnRight: Bool) {
+        func room(left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat, floor: NSColor, doorY: CGFloat, doorOnRight: Bool,
+                  tiles: NSColor? = nil, wallColor: NSColor? = nil) {
             let w = right - left, hh = bottom - top, zFront = depth(bottom) + 1
             rect(left, top, w, hh, floor, z: -0.6)
             let seam = floor.blended(withFraction: 0.18, of: .black)!
             var py = top + 24
-            if space {   // แผ่นเหล็กปูพื้นเป็นตาราง + หมุดมุมแผ่น
+            if let tiles {   // กระเบื้องตาราง (layer เดียว ใช้สี pattern)
+                rect(left, top + 24, w, hh - 24, .clear, z: -0.59).backgroundColor = tiles.cgColor
+            } else if space {   // แผ่นเหล็กปูพื้นเป็นตาราง + หมุดมุมแผ่น
                 while py < bottom { rect(left, py, w, 1, seam, z: -0.59); py += 32 }
                 var px = left + 32
                 while px < right { rect(px, top + 24, 1, hh - 24, seam, z: -0.59); px += 32 }
             } else {
                 while py < bottom { rect(left, py, w, 1, seam, z: -0.59); py += 14 }   // แผ่นไม้กระดาน
             }
-            rect(left, top, w, 24, wall, z: -0.5); rect(left, top, w, 4, wallTop, z: -0.45)
-            if space { rect(left, top + 19, w, 2, glow.withAlphaComponent(0.8), z: -0.44) }          // แถบไฟผนัง
+            rect(left, top, w, 24, wallColor ?? wall, z: -0.5); rect(left, top, w, 4, wallTop, z: -0.45)
+            if park { for wx in stride(from: left + 14, to: right - 8, by: 28) { rect(wx, top + 10, 4, 4, wallTop.withAlphaComponent(0.7), z: -0.44, radius: 2) } }   // ลายจุดวอลเปเปอร์
+            else if space { rect(left, top + 19, w, 2, glow.withAlphaComponent(0.8), z: -0.44) }          // แถบไฟผนัง
             else { for ly in [top + 10, top + 17] { rect(left, ly, w, 1, wallTop, z: -0.44) } }    // ร่องไม้ซุง
             rect(left, bottom - 5, w, 5, wallTop, z: zFront)                                   // ผนังหน้า
             for (x, hasDoor) in [(left, !doorOnRight), (right - 5, doorOnRight)] {
@@ -1052,7 +1148,8 @@ final class VillageLayerView: NSView {
         // 🛋️ ห้องนั่งเล่น
         room(left: lo.left, right: lo.right, top: lo.top, bottom: lo.bottom,
              floor: space ? c((0.36, 0.39, 0.5), (0.17, 0.18, 0.26)) : c((0.8, 0.62, 0.42), (0.33, 0.25, 0.17)),
-             doorY: lo.doorY, doorOnRight: true)
+             doorY: lo.doorY, doorOnRight: true,
+             tiles: park ? checker(c((0.85, 0.95, 0.88), (0.28, 0.33, 0.3)), c((0.97, 0.95, 0.88), (0.34, 0.33, 0.3)), 16) : nil)
         /// วางภาพ (ยืนบนพื้นที่ top) สูง hh; z ตามความลึกถ้าไม่ระบุ
         @discardableResult
         func put(_ name: String, x: CGFloat, top: CGFloat, h hh: CGFloat, z: CGFloat? = nil) -> CALayer {
@@ -1063,19 +1160,36 @@ final class VillageLayerView: NSView {
         do {
             let rx = lo.left + 30, rw = lw - 60, rt = lo.top + 64, rh = lo.bottom - lo.top - 92, z: CGFloat = -0.55
             // อวกาศ: พรมโฮโลสีกรมท่า ขอบไฟ cyan/ม่วง
-            let base = space ? c((0.16, 0.2, 0.36), (0.08, 0.1, 0.2)) : c((0.45, 0.55, 0.38), (0.2, 0.27, 0.18))
-            let cream = space ? glow.withAlphaComponent(n ? 0.6 : 0.85) : c((0.93, 0.87, 0.72), (0.42, 0.39, 0.32))
-            let accent = space ? c((0.5, 0.36, 0.85), (0.28, 0.2, 0.5)) : c((0.74, 0.42, 0.28), (0.36, 0.2, 0.14))
+            // สวนสุนัข: พรมชมพูพาสเทลลายรอยเท้า
+            let base = space ? c((0.16, 0.2, 0.36), (0.08, 0.1, 0.2)) : park ? c((0.98, 0.8, 0.82), (0.4, 0.3, 0.32))
+                             : c((0.45, 0.55, 0.38), (0.2, 0.27, 0.18))
+            let cream = space ? glow.withAlphaComponent(n ? 0.6 : 0.85) : park ? c((1, 1, 0.97), (0.55, 0.55, 0.52))
+                              : c((0.93, 0.87, 0.72), (0.42, 0.39, 0.32))
+            let accent = space ? c((0.5, 0.36, 0.85), (0.28, 0.2, 0.5)) : park ? c((0.93, 0.55, 0.62), (0.4, 0.22, 0.27))
+                               : c((0.74, 0.42, 0.28), (0.36, 0.2, 0.14))
             let dark = base.blended(withFraction: 0.3, of: .black)!
-            for fx in stride(from: rx + 4, to: rx + rw - 2, by: 6) where !space {  // พู่ซ้าย-ขวา (บน/ล่าง)
+            for fx in stride(from: rx + 4, to: rx + rw - 2, by: 6) where !space && !park {  // พู่ซ้าย-ขวา (บน/ล่าง)
                 rect(fx, rt - 5, 2, 5, cream, z: z); rect(fx, rt + rh, 2, 5, cream, z: z)
             }
             rect(rx, rt, rw, rh, dark, z: z, radius: 4)
             rect(rx + 4, rt + 4, rw - 8, rh - 8, cream, z: z + 0.001, radius: 3)
             rect(rx + 8, rt + 8, rw - 16, rh - 16, accent, z: z + 0.002, radius: 2)
             rect(rx + 12, rt + 12, rw - 24, rh - 24, base, z: z + 0.003, radius: 2)
-            // ลายตารางจุดครีม
-            var gy = rt + 24
+            // ลายตารางจุดครีม (สวนสุนัข: รอยเท้าในภาพเดียว)
+            if park {
+                let paws = CALayer(); paws.frame = CGRect(x: rx + 12, y: Y(rt + rh - 12), width: rw - 24, height: rh - 24)
+                paws.contents = paint(paws.bounds.size) { ctx in
+                    ctx.setFillColor(accent.withAlphaComponent(0.55).cgColor)
+                    var gy: CGFloat = 16, row = 0
+                    while gy < rh - 30 {
+                        var gx: CGFloat = 16 + (row % 2 == 0 ? 0 : 16)
+                        while gx < rw - 36 { pawPrint(ctx, gx, gy, 10); gx += 32 }
+                        gy += 28; row += 1
+                    }
+                }
+                add(paws, z: z + 0.004)
+            }
+            var gy = park ? rt + rh : rt + 24
             while gy < rt + rh - 18 {
                 var gx = rx + 24 + (Int((gy - rt) / 20) % 2 == 0 ? 0 : 10)
                 while gx < rx + rw - 22 {   // อวกาศ: จุดไฟเล็กจางๆ แบบพื้นโฮโล
@@ -1112,17 +1226,30 @@ final class VillageLayerView: NSView {
         for k in 0..<(lo.rows * lo.perRow) {
             let s = lo.seat(k)
             let kind = (k * 7 + 3) % 5 % 3   // สลับชนิดแบบไม่เป็นลำดับ
+            if park && sprite("dogs/bed") == nil {   // สวนสุนัข: เบาะหมากลม (วาดเอง จนกว่าจะมีภาพ dogs/bed.png)
+                let rim = [c((0.9, 0.36, 0.33), (0.4, 0.18, 0.17)), c((0.36, 0.6, 0.9), (0.17, 0.27, 0.4)),
+                           c((0.45, 0.75, 0.45), (0.2, 0.33, 0.2)), c((0.98, 0.75, 0.3), (0.42, 0.33, 0.15))][k % 4]
+                let bed = CALayer(); bed.anchorPoint = CGPoint(x: 0.5, y: 0); bed.bounds = CGRect(x: 0, y: 0, width: 54, height: 24)
+                bed.position = CGPoint(x: s.p.x, y: Y(s.p.y + 10))
+                let outer = CALayer(); outer.frame = bed.bounds; outer.cornerRadius = 12; outer.backgroundColor = rim.cgColor
+                outer.borderWidth = 1.5; outer.borderColor = rim.blended(withFraction: 0.4, of: .black)!.cgColor
+                let inner = CALayer(); inner.frame = bed.bounds.insetBy(dx: 7, dy: 6).offsetBy(dx: 0, dy: 2); inner.cornerRadius = 7
+                inner.backgroundColor = c((0.98, 0.95, 0.88), (0.45, 0.43, 0.4)).cgColor
+                bed.addSublayer(outer); bed.addSublayer(inner)
+                add(bed, z: depth(s.p.y) - 0.3); sofas.append(bed)
+                continue
+            }
             sofas.append(put(["sofa_orange", "sofa_blue", "beanbag"][kind], x: s.p.x, top: s.p.y + 10, h: kind == 2 ? 36 : 44, z: depth(s.p.y) - 0.3))
         }
 
         // 🏢 ห้องทำงาน
         room(left: h.left, right: h.right, top: h.top, bottom: h.bottom,
              floor: space ? c((0.42, 0.45, 0.55), (0.2, 0.21, 0.29)) : c((0.86, 0.74, 0.55), (0.36, 0.3, 0.22)),
-             doorY: h.doorY, doorOnRight: false)
+             doorY: h.doorY, doorOnRight: false, wallColor: park ? c((0.7, 0.85, 0.97), (0.26, 0.32, 0.4)) : nil)
         put("tv", x: (h.left + h.right) / 2, top: h.top + 26, h: 26, z: -0.4)
         var wx = h.left + 60, wi = 0
         while wx < h.right - 40 {
-            if abs(wx - (h.left + h.right) / 2) > 50 { deco((space ? ["🪐", "🕒"] : ["🗓️", "🕒"])[wi % 2], px: 12, h: 16, x: wx, top: h.top + 20, z: -0.4) }
+            if abs(wx - (h.left + h.right) / 2) > 50 { deco((space ? ["🪐", "🕒"] : park ? ["🦴", "🎾"] : ["🗓️", "🕒"])[wi % 2], px: 12, h: 16, x: wx, top: h.top + 20, z: -0.4) }
             wx += 120; wi += 1
         }
         put("whiteboard", x: h.right - 34, top: h.top + 70, h: 52, z: -0.3)
@@ -1811,6 +1938,10 @@ struct AgentGroveApp: App {
                 (critters, babies) = loadCritters(mode)
                 let projects = group(agents), w: CGFloat = 900, h = Village.height(w, projects)
                 let v = VillageLayerView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+                // AGENT_GROVE_APPEARANCE=light|dark → บังคับกลางวัน/กลางคืน (ไม่ตามระบบ)
+                if let ap = ProcessInfo.processInfo.environment["AGENT_GROVE_APPEARANCE"] {
+                    v.appearance = NSAppearance(named: ap == "dark" ? .darkAqua : .aqua)
+                }
                 v.layer!.backgroundColor = NSColor(red: 0.87, green: 0.95, blue: 1, alpha: 1).cgColor
                 v.update(projects, animate: ProcessInfo.processInfo.environment["AGENT_GROVE_PACE"] != nil, mode: mode)
                 // AGENT_GROVE_CLICK=x,y → คลิกที่จุดนั้น (พิกัดจากมุมซ้ายบน) ก่อนถ่าย

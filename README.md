@@ -61,10 +61,10 @@ SwiftUI + Core Animation ล้วน ไม่มี WebKit / ไม่มี d
 | โหมด | โฟลเดอร์ภาพ |
 |---|---|
 | 🐾 สัตว์รวม | `Sprites/` |
-| 🐕 สุนัข | `Sprites/dogs/` — 32 สายพันธุ์ + ลูกหมา 6 ตัว (ตั้งชื่อไฟล์แบบเดียวกัน) |
+| 🐕 สุนัข | `Sprites/dogs/` — 32 สายพันธุ์ + ลูกหมา 6 ตัว (ตั้งชื่อไฟล์แบบเดียวกัน) ฉากสวนสุนัข + Doggy Daycare (รั้วไม้ขาว ทางเดินรอยเท้า เบาะหมากลม พรมลายรอยเท้า) |
 | 🚀 อวกาศ | `Sprites/space/` — ฉากสถานีอวกาศ (ฟ้าดาว เนบิวลา ดาวเคราะห์ ท่อเชื่อม พื้นเหล็ก หน้าต่างกลม) ยังไม่มีภาพหุ่นยนต์ → ใช้สัตว์ชุดรวมไปก่อน; ใส่ภาพเฟอร์นิเจอร์ชื่อเดียวกับของเดิม (เช่น `sofa_orange.png`, `table_mid.png`) ในโฟลเดอร์นี้แล้วจะใช้แทนอัตโนมัติ |
 
-ของในมือใช้ `Sprites/` ร่วมกันทุกโหมด; ฉากป่าใช้กับโหมดสัตว์รวมและสุนัข
+ของในมือใช้ `Sprites/` ร่วมกันทุกโหมด; เฟอร์นิเจอร์ในโฟลเดอร์ของโหมด (ชื่อเดียวกับของเดิม เช่น `dogs/bed.png`, `space/table_mid.png`) จะใช้แทนอัตโนมัติ
 
 ### ตัดภาพจาก sprite sheet
 
@@ -88,6 +88,7 @@ python3 tools/cut_magenta.py sheet.jpeg Sprites \
 AGENT_GROVE_SNAPSHOT=/tmp/shot.png "build/Agent Grove.app/Contents/MacOS/AgentGrove"                  # ข้อมูลจริง
 AGENT_GROVE_SNAPSHOT=/tmp/demo.png AGENT_GROVE_DEMO=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove" # ข้อมูลจำลอง 24 ตัว
 AGENT_GROVE_TASKS=~/.claude/projects/<โปรเจกต์>/<session>.jsonl "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # งานเบื้องหลังที่ยังไม่จบ
+AGENT_GROVE_SNAPSHOT=/tmp/n.png AGENT_GROVE_APPEARANCE=dark "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # บังคับกลางวัน/กลางคืน (light|dark)
 AGENT_GROVE_LIST=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"                                       # พิมพ์สถานะที่อ่านได้
 AGENT_GROVE_SNAPSHOT=/tmp/dogs.png AGENT_GROVE_MODE=dogs "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # โหมดสุนัข
 AGENT_GROVE_SNAPSHOT=/tmp/r.png AGENT_GROVE_REARRANGE=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"   # ผังห้องนั่งเล่นรอบถัดไป
