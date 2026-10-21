@@ -71,7 +71,7 @@ func collect() -> [Agent] {
         guard let d = readJSON(claudeSessions + "/" + f), pidAlive(d["pid"]) else { continue }
         let cwd = d["cwd"] as? String ?? ""
         var a = Agent(name: d["name"] as? String ?? basename(cwd), cwd: cwd, project: projectName(cwd),
-                      state: (d["status"] as? String) == "busy" ? .working : .idle,
+                      state: ["busy", "shell"].contains(d["status"] as? String ?? "") ? .working : .idle,   // shell = รอ shell เบื้องหลัง
                       since: d["statusUpdatedAt"] as? Double, alive: true)
         if let sid = d["sessionId"] as? String {
             sessions.append((cwd, sid))
@@ -123,8 +123,10 @@ func collect() -> [Agent] {
     for s in sessions {
         guard var a = agents[s.cwd], a.state == .working || a.state == .idle else { continue }
         let fresh = a.runningSince.map { nowMs - $0 < 5000 } ?? true   // ไม่มี/เพิ่งเริ่ม เครื่องมือหน้าจอ
-        guard fresh, let bg = backgroundTasks(projectDir(s.cwd) + "/\(s.id).jsonl").min(by: { $0.since < $1.since }) else { continue }
-        a.state = .working; a.tool = bg.kind; a.runningSince = bg.since
+        let tasks = backgroundTasks(projectDir(s.cwd) + "/\(s.id).jsonl").sorted { $0.since < $1.since }
+        guard fresh, let first = tasks.first else { continue }
+        let bg = tasks.first { $0.kind == "Monitor" } ?? first   // มี Monitor → แสดง 📡 ก่อน
+        a.state = .working; a.tool = bg.kind; a.runningSince = first.since
         a.command = (bg.kind == "Monitor" ? "📡 " : "⚙️ ") + (bg.desc ?? bg.kind)
         agents[s.cwd] = a
     }
