@@ -618,7 +618,7 @@ enum Village {
         _ = mains
         return VillageLayout(width: width, lounging: 12, seated: total)   // ห้องนั่งเล่นขนาดคงที่ 12 ที่ — เต็มแล้วตัวที่กลับมาเดินออกไปเลย
     }
-    /// สีประจำโปรเจกต์ (พรมใต้เท้า + ป้ายกลุ่ม)
+    /// สีประจำโปรเจกต์ (จุดสีใน popover)
     static let colors: [NSColor] = [
         NSColor(red: 0.29, green: 0.5, blue: 0.82, alpha: 1), NSColor(red: 0.85, green: 0.42, blue: 0.24, alpha: 1),
         NSColor(red: 0.3, green: 0.65, blue: 0.38, alpha: 1), NSColor(red: 0.62, green: 0.38, blue: 0.78, alpha: 1),
@@ -742,11 +742,9 @@ final class VillageLayerView: NSView {
     private var scenery: [CALayer] = []   // ห้อง เฟอร์นิเจอร์ — วาดใหม่เมื่อขนาด/จำนวนแถวเปลี่ยน
     private var sceneryKey = ""
     private var sofas: [CALayer] = []     // เฟอร์นิเจอร์ห้องนั่งเล่น (ลำดับตามที่นั่ง k) — เลื่อนไปที่ใหม่เมื่อจัดห้องใหม่
-    private var marks: [CALayer] = []     // พรมสีโปรเจกต์ + ป้ายกลุ่ม — วาดใหม่ทุกครั้งที่ที่นั่งเปลี่ยน
-    private var tags: [(key: String, layer: CALayer)] = []   // ป้ายชื่อโปรเจกต์ — ซ่อนไว้ คลิกตัวละครแล้วแสดงเฉพาะโปรเจกต์นั้น
-    private var projectAt: [String: String] = [:]           // animal id (ที่นั่งห้องทำงาน) → project key
-    private var shownProject: String?
-    private var hideTags: DispatchWorkItem?
+    private var colorOfProject: [String: NSColor] = [:]     // project key → สีประจำโปรเจกต์ (ใช้ใน popover)
+    private let popover = NSPopover()                         // คลิกตัวละคร → บอกว่าตัวนี้กำลังทำอะไร
+    private var popoverAid: String?
     private var projects: [Project] = []
     private var animate = false
     private var L = VillageLayout(width: 0, lounging: 0, seated: 0)
@@ -1101,7 +1099,6 @@ final class VillageLayerView: NSView {
 
         L = Village.layout(bounds.width, projects)
         drawScenery()
-        marks.forEach { $0.removeFromSuperlayer() }; marks = []; tags = []
         let cap = (lounge: L.lounge.rows * L.lounge.perRow, hall: L.hall.tables * 2 * L.hall.perSide)
 
         let flat = projects.flatMap { p in p.agents.map { (p, $0) } }
@@ -1171,83 +1168,43 @@ final class VillageLayerView: NSView {
             let a = owner[aid].flatMap { agentById[$0]?.1 } ?? Agent(name: "", cwd: aid, project: "", state: .idle, alive: true)
             let spot: CGPoint
             if s.hall {
-                let d = L.hall.seat(s.k); spot = d.p
-                if let key = projectOf[aid], let (color, _) = colorOf[key] {
-                    mark(x: d.p.x, top: d.front ? d.p.y - 1 : L.hall.tableBase(d.table) - 44, w: Hall.pitch - 6,
-                         z: d.front ? depth(d.p.y) : depth(L.hall.tableBase(d.table)) + 0.05, color: color)
-                }
+                spot = L.hall.seat(s.k).p
             } else { spot = L.lounge.seat(s.k).p }
             apply(a, al, spot: spot, walking: walking && al.spot != nil)
         }
 
-        // ป้ายชื่อ (ห้องทำงานเท่านั้น): หนึ่งป้ายต่อโปรเจกต์ต่อแถวที่นั่ง (โต๊ะ + ฝั่งหน้า/หลัง)
-        // วางเป็นเลน: ถ้าชนป้ายข้างๆ ในแถวเดียวกัน → ลงเลนถัดไป (แถวหน้าเลื่อนลง, แถวหลังเลื่อนขึ้น)
-        var lines: [String: [(key: String, name: String, color: NSColor, xs: [CGFloat], d: (p: CGPoint, front: Bool, table: Int))]] = [:]
-        projectAt = [:]
-        for (aid, s) in seats where s.hall {
-            guard let key = projectOf[aid], let (color, name) = colorOf[key] else { continue }
-            projectAt[aid] = key
-            let d = L.hall.seat(s.k), line = "\(d.table)-\(d.front)"
-            if let i = lines[line]?.firstIndex(where: { $0.name == name }) { lines[line]![i].xs.append(d.p.x) }
-            else { lines[line, default: []].append((key, name, color, [d.p.x], d)) }
-        }
-        let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
-        for groups in lines.values {
-            var laneRight: [CGFloat] = []
-            for g in groups.sorted(by: { $0.xs.min()! < $1.xs.min()! }) {
-                let cx = (g.xs.min()! + g.xs.max()!) / 2
-                let w = min(130, (" \(g.name) " as NSString).size(withAttributes: [.font: font]).width + 12)
-                let lane = laneRight.firstIndex { $0 + 4 <= cx - w / 2 } ?? laneRight.count
-                if lane == laneRight.count { laneRight.append(-.infinity) }
-                laneRight[lane] = cx + w / 2
-                let d = g.d, step: CGFloat = 16
-                let top = d.front ? d.p.y + 6 + CGFloat(lane) * step                     // ใต้เท้าแถวหน้า
-                                  : L.hall.tableBase(d.table) - 44 - CGFloat(lane) * step  // บนโต๊ะ (แถวหลัง)
-                tag(g.name, key: g.key, color: g.color, x: cx, width: w, top: top)
-            }
-        }
+        colorOfProject = colorOf.mapValues(\.0)
+        if let aid = popoverAid { refreshPopover(aid) }
     }
 
-    private func mark(x: CGFloat, top: CGFloat, w: CGFloat, z: CGFloat, color: NSColor) {
-        let m = CALayer(); m.cornerRadius = 3
-        m.bounds = CGRect(x: 0, y: 0, width: w, height: 7)
-        m.backgroundColor = color.withAlphaComponent(0.9).cgColor
-        m.position = P(CGPoint(x: x, y: top)); m.zPosition = z
-        layer?.addSublayer(m); marks.append(m)
-    }
-
-    private func tag(_ name: String, key: String, color: NSColor, x: CGFloat, width: CGFloat, top: CGFloat) {
-        let t = signLayer(fontSize: 10); t.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
-        t.string = " \(name) "; t.bounds = CGRect(x: 0, y: 0, width: width, height: 15)
-        t.backgroundColor = color.blended(withFraction: 0.3, of: .black)!.cgColor
-        t.borderWidth = 1; t.borderColor = NSColor.black.withAlphaComponent(0.35).cgColor
-        t.shadowOpacity = 0.35; t.shadowRadius = 1.5; t.shadowOffset = CGSize(width: 0, height: -1)
-        t.position = P(CGPoint(x: x, y: top)); t.zPosition = 85
-        t.opacity = key == shownProject ? 1 : 0
-        layer?.addSublayer(t); marks.append(t); tags.append((key, t))
-    }
-
-    // คลิกตัวละครในห้องทำงาน → แสดงป้ายชื่อโปรเจกต์ของตัวนั้น (คลิกซ้ำ/คลิกที่ว่าง = ซ่อน, ซ่อนเองหลัง 8 วิ)
+    // คลิกตัวละคร → popover ชี้ที่ตัวนั้น บอกว่ากำลังทำอะไร (คลิกตัวเดิมซ้ำ/คลิกที่ว่าง = ปิด)
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { click(at: convert(event.locationInWindow, from: nil)) }
+    private func frameOnScreen(_ al: AgentLayer) -> CGRect {
+        let pos = (al.root.presentation() ?? al.root).position   // ตัวที่กำลังเดิน → ตำแหน่งบนจอจริง
+        return al.body.frame.offsetBy(dx: pos.x, dy: pos.y)
+    }
     func click(at pt: CGPoint) {
-        let hit = projectAt.first { aid, _ in
-            guard let al = agents[aid] else { return false }
-            let pos = (al.root.presentation() ?? al.root).position   // ตัวที่กำลังเดินวนรอ → ตำแหน่งบนจอจริง
-            return al.body.frame.offsetBy(dx: pos.x, dy: pos.y).insetBy(dx: -4, dy: -4).contains(pt)
-        }?.value
-        showTags(hit == shownProject ? nil : hit)
+        let hit = agents.filter { !leaving.contains($0.key) && $0.value.root.opacity > 0 }
+            .filter { frameOnScreen($0.value).insetBy(dx: -4, dy: -4).contains(pt) }
+            .max { ($0.value.root.presentation() ?? $0.value.root).zPosition < ($1.value.root.presentation() ?? $1.value.root).zPosition }?.key
+        if popover.isShown { popover.performClose(nil) }
+        guard let hit, hit != popoverAid else { popoverAid = nil; return }
+        popoverAid = hit
+        refreshPopover(hit)
+        if let al = agents[hit], window != nil { popover.show(relativeTo: frameOnScreen(al), of: self, preferredEdge: .maxY) }
     }
-    private func showTags(_ key: String?) {
-        shownProject = key
-        CATransaction.begin(); CATransaction.setAnimationDuration(0.15)
-        for t in tags { t.layer.opacity = t.key == key ? 1 : 0 }
-        CATransaction.commit()
-        hideTags?.cancel(); hideTags = nil
-        guard key != nil else { return }
-        let w = DispatchWorkItem { [weak self] in self?.showTags(nil) }
-        hideTags = w; DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: w)
+    private func refreshPopover(_ aid: String) {
+        guard let al = agents[aid], !leaving.contains(aid) else { popover.performClose(nil); popoverAid = nil; return }
+        let a = owner[aid] == nil ? nil : al.agent
+        let info = AgentInfo(animal: al.critter.name, agent: a, color: a.flatMap { colorOfProject[$0.project.lowercased()] },
+                             rest: al.shownRest ?? al.rest)
+        if let host = popover.contentViewController as? NSHostingController<AgentInfo> { host.rootView = info }
+        else { popover.contentViewController = NSHostingController(rootView: info); popover.behavior = .transient }
     }
+    var popoverText: String? { popoverAid.flatMap { agents[$0] }.map { al in   // ดีบัก (snapshot): เนื้อหา popover
+        AgentInfo(animal: al.critter.name, agent: owner[popoverAid!] == nil ? nil : al.agent, color: nil, rest: al.shownRest ?? al.rest).lines.joined(separator: "\n")
+    } }
 
     /// เส้นทาง (พิกัด top): ออกจากห้องต้นทาง → ทางเดินกลาง → เข้าห้องปลายทาง
     private func route(_ a: CGPoint, _ b: CGPoint) -> [CGPoint] {
@@ -1490,6 +1447,97 @@ final class VillageLayerView: NSView {
 
 // MARK: - SwiftUI
 
+/// เนื้อหา popover ของตัวละคร: agent อะไร โปรเจกต์ไหน กำลังทำอะไร
+struct AgentInfo: View {
+    let animal: String
+    let agent: Agent?      // nil = ตัวว่างในห้องนั่งเล่น
+    let color: NSColor?
+    let rest: RestPose
+
+    static func toolText(_ t: String?) -> String? {
+        guard let t else { return nil }
+        switch t {
+        case "Bash": return "รันคำสั่งใน terminal"
+        case "Read": return "อ่านไฟล์"
+        case "Edit", "Write", "MultiEdit", "NotebookEdit": return "แก้ไขไฟล์"
+        case "Grep", "Glob": return "ค้นหาในโค้ด"
+        case "WebFetch", "WebSearch": return "ค้นข้อมูลจากเว็บ"
+        case "Agent", "Task": return "เรียก subagent มาช่วย"
+        case "Monitor": return "เฝ้าดูงานเบื้องหลัง (Monitor)"
+        case "TodoWrite": return "จดรายการงาน"
+        default: return t
+        }
+    }
+    var animalName: String {
+        let n = (animal.split(separator: "/").last.map(String.init) ?? animal).replacingOccurrences(of: "baby_", with: "")
+        return n.prefix(1).uppercased() + n.dropFirst()
+    }
+    var title: String {
+        guard let a = agent else { return "🛋️ พักผ่อนอยู่" }
+        return a.subId != nil ? "🐣 \(a.name)" : a.name
+    }
+    func status(_ now: Date) -> String {
+        guard let a = agent else {
+            switch rest {
+            case .sleep: return "😴 กำลังนอน — ว่าง รอรับงานใหม่"
+            case .stretch: return "🙆 ยืดเส้นยืดสาย — ว่าง รอรับงานใหม่"
+            case .sit(let i):
+                let what = ["📖": "อ่านหนังสือ", "🎮": "เล่นเกม", "☕": "จิบกาแฟ", "🎧": "ฟังเพลง", "📱": "เล่นมือถือ", "🍪": "กินขนม"][i] ?? "นั่งเล่น"
+                return "\(i) \(what) — ว่าง รอรับงานใหม่"
+            }
+        }
+        switch a.state {
+        case .blocked: return "❗ รอคุณอนุญาตให้ใช้เครื่องมือ"
+        case .waiting: return "❓ รอคำสั่งจากคุณ"
+        case .idle: return "💤 ว่าง"
+        case .working:
+            if let since = a.runningSince {
+                let s = max(0, Int(now.timeIntervalSince1970 - since / 1000))
+                return (a.tool == "Monitor" ? "📡 รอ Monitor " : "⏳ รอคำสั่งรันเสร็จ ") + (s < 60 ? "\(s) วิ" : "\(s / 60) นาที \(s % 60) วิ")
+            }
+            return "🔨 " + (Self.toolText(a.tool) ?? "กำลังคิด/ทำงาน")
+        }
+    }
+    /// ข้อความทั้งหมด (ใช้ทั้งในหน้าจอและตอนดีบัก)
+    var lines: [String] {
+        var l = [title, status(Date())]
+        if let a = agent {
+            l.append("📁 \(a.project)")
+            if let c = a.command, a.runningSince != nil { l.append("› \(c)") }
+            else if a.subId != nil, let p = a.prompt { l.append("ประเภท: \(p)") }
+            else if let p = a.prompt { l.append("งานล่าสุด: \(p)") }
+        }
+        l.append("ตัวละคร: \(animalName)")
+        return l
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in   // นับเวลาที่รอแบบสดๆ เฉพาะตอนเปิด popover
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.headline).lineLimit(2)
+                Text(status(ctx.date)).font(.callout)
+                if let a = agent {
+                    HStack(spacing: 6) {
+                        Circle().fill(Color(nsColor: color ?? .gray)).frame(width: 9, height: 9)
+                        Text(a.project).font(.callout.weight(.semibold))
+                    }
+                    if let c = a.command, a.runningSince != nil {
+                        Text(c).font(.caption.monospaced()).lineLimit(3)
+                            .padding(6).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                    } else if a.subId != nil, let p = a.prompt {
+                        Text("ประเภท: \(p)").font(.caption).foregroundStyle(.secondary)
+                    } else if let p = a.prompt {
+                        Text("งานล่าสุด: \(p)").font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                }
+                Text("ตัวละคร: \(animalName)").font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(12).frame(width: 260, alignment: .leading)
+        }
+    }
+}
+
 extension Color {
     init(light: NSColor, dark: NSColor) {
         self.init(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light })
@@ -1641,6 +1689,7 @@ struct AgentGroveApp: App {
                 // AGENT_GROVE_CLICK=x,y → คลิกที่จุดนั้น (พิกัดจากมุมซ้ายบน) ก่อนถ่าย
                 if let c = ProcessInfo.processInfo.environment["AGENT_GROVE_CLICK"]?.split(separator: ",").compactMap({ Double($0) }), c.count == 2 {
                     v.click(at: CGPoint(x: c[0], y: Double(h) - c[1]))
+                    print(v.popoverText ?? "(ไม่โดนตัวไหน)")
                 }
                 // AGENT_GROVE_REARRANGE=n → จัดห้องนั่งเล่นใหม่ n รอบก่อนถ่าย (ตรวจผังที่เปลี่ยน)
                 for _ in 0..<(Int(ProcessInfo.processInfo.environment["AGENT_GROVE_REARRANGE"] ?? "") ?? 0) { v.rearrangeLounge() }
