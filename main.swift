@@ -118,6 +118,17 @@ func collect() -> [Agent] {
         agents[cwd] = a
     }
 
+    // งานเบื้องหลัง (Bash run_in_background / Monitor) ยังไม่จบ → ยังรออยู่ในห้องทำงาน แม้ session จะว่างแล้ว
+    // (หลัง Orca: hook PostToolUse ของ Orca ล้างได้แค่เครื่องมือหน้าจอ ไม่ใช่งานเบื้องหลัง)
+    for s in sessions {
+        guard var a = agents[s.cwd], a.state == .working || a.state == .idle else { continue }
+        let fresh = a.runningSince.map { nowMs - $0 < 5000 } ?? true   // ไม่มี/เพิ่งเริ่ม เครื่องมือหน้าจอ
+        guard fresh, let bg = backgroundTasks(projectDir(s.cwd) + "/\(s.id).jsonl").min(by: { $0.since < $1.since }) else { continue }
+        a.state = .working; a.tool = bg.kind; a.runningSince = bg.since
+        a.command = (bg.kind == "Monitor" ? "📡 " : "⚙️ ") + (bg.desc ?? bg.kind)
+        agents[s.cwd] = a
+    }
+
     // เครื่องมือที่รันยังไม่ถึง 5 วิ = ทำงานปกติ
     for (k, a) in agents where a.runningSince.map({ nowMs - $0 < 5000 }) ?? false { agents[k]?.runningSince = nil }
 
@@ -199,6 +210,84 @@ func transcriptTail(_ path: String) -> (tool: String?, pendingSince: Double?, co
         return (tool, at, summarize(use["input"]))
     }
     return (tool, nil, nil)
+}
+
+/// บรรทัดที่มีคำบ่งชี้งานเบื้องหลัง (ใช้ memmem → เร็วกว่าแปลงเป็น String ทั้งก้อนมาก)
+private let taskMarkers = ["\"run_in_background\":true", "\"name\":\"Monitor\"", "\"backgroundTaskId\"", "\"taskId\"", "<status>", "\"name\":\"TaskStop\""]
+    .map { Array($0.utf8) }
+private func markedLines(_ data: Data) -> [Data] {
+    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> [Data] in
+        guard let base = raw.baseAddress else { return [] }
+        let n = raw.count
+        var lines: [Int: Data] = [:]   // ตำแหน่งต้นบรรทัด → บรรทัด
+        for m in taskMarkers {
+            var from = 0
+            while from < n, let hit = m.withUnsafeBytes({ memmem(base + from, n - from, $0.baseAddress, m.count) }) {
+                let i = base.distance(to: hit)
+                var s = i; while s > 0 && raw[s - 1] != 0x0A { s -= 1 }
+                var e = i; while e < n && raw[e] != 0x0A { e += 1 }
+                if lines[s] == nil { lines[s] = Data(bytes: base + s, count: e - s) }
+                from = e + 1
+            }
+        }
+        return lines.sorted { $0.key < $1.key }.map(\.value)   // ตามลำดับในไฟล์ (เริ่มก่อนจบ)
+    }
+}
+
+/// งานเบื้องหลังที่ยังไม่จบของ session: tool_result ที่มี backgroundTaskId (Bash) / taskId (Monitor) = เริ่ม;
+/// <task-notification> ที่มี <status> = จบ (event ระหว่างทางไม่มี status); Monitor หมดเวลาเองตาม timeoutMs
+struct BackgroundTask { var id = ""; var kind: String; var desc: String?; var since: Double; var until: Double? }
+private struct TaskScan { var offset: UInt64 = 0; var running: [String: BackgroundTask] = [:]; var uses: [String: (String, String?)] = [:] }
+nonisolated(unsafe) private var taskScans: [String: TaskScan] = [:]
+
+func backgroundTasks(_ path: String) -> [BackgroundTask] {
+    guard let fh = FileHandle(forReadingAtPath: path) else { taskScans[path] = nil; return [] }
+    defer { try? fh.close() }
+    var st = taskScans[path] ?? TaskScan()
+    let size = (try? fh.seekToEnd()) ?? 0
+    if size < st.offset { st = TaskScan() }                            // ไฟล์ถูกเขียนใหม่
+    // ครั้งแรกอ่านทั้งไฟล์ (งานอาจเริ่มไว้นานแล้ว) ทีละ 4MB; รอบต่อไปอ่านเฉพาะส่วนที่เขียนเพิ่ม
+    let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    while size > st.offset { let more: Bool = autoreleasepool {   // คืนหน่วยความจำทุก chunk
+        try? fh.seek(toOffset: st.offset)
+        guard let data = try? fh.read(upToCount: 4 << 20), !data.isEmpty else { return false }
+        guard let nl = data.lastIndex(of: 0x0A) else {                  // บรรทัดยาวเกิน 4MB (รูปภาพ) หรือยังเขียนไม่จบ
+            if data.count == 4 << 20 { st.offset += UInt64(data.count); return true } else { return false }
+        }
+        let end = nl + 1 - data.startIndex
+        st.offset += UInt64(end)
+        for line in markedLines(data.prefix(end)) {   // ค้นคำในระดับไบต์ → parse JSON เฉพาะบรรทัดที่เกี่ยวข้อง (ไฟล์อาจใหญ่ร้อย MB)
+            guard let d = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            let content = ((d["message"] as? [String: Any])?["content"] as? [[String: Any]]) ?? []
+            for c in content where c["type"] as? String == "tool_use" {
+                if let id = c["id"] as? String, let name = c["name"] as? String { st.uses[id] = (name, summarize(c["input"])) }
+                if c["name"] as? String == "TaskStop", let inp = c["input"] as? [String: Any],
+                   let tid = (inp["task_id"] ?? inp["shell_id"]) as? String { st.running[tid] = nil }   // หยุดเอง: ไม่มี notification
+            }
+            if let r = d["toolUseResult"] as? [String: Any], let tid = (r["backgroundTaskId"] ?? r["taskId"]) as? String,
+               let useId = content.first(where: { $0["type"] as? String == "tool_result" })?["tool_use_id"] as? String {
+                let at = (d["timestamp"] as? String).flatMap { iso.date(from: $0) }.map { $0.timeIntervalSince1970 * 1000 }
+                    ?? Date().timeIntervalSince1970 * 1000
+                let use = st.uses.removeValue(forKey: useId) ?? ("Bash", nil)
+                st.running[tid] = BackgroundTask(id: tid, kind: use.0, desc: use.1, since: at,
+                                                 until: (r["timeoutMs"] as? Double).map { at + $0 })
+            }
+            // แต่ละ <task-notification> ที่มี <status> = งานนั้นจบแล้ว (นับเฉพาะที่เข้าคิวจริง ไม่ใช่ข้อความใน tool_result)
+            if d["type"] as? String == "queue-operation", let raw = d["content"] as? String {
+                for chunk in raw.components(separatedBy: "<task-notification>") where chunk.contains("<status>") {
+                    if let a = chunk.range(of: "<task-id>"), let b = chunk.range(of: "</task-id>", range: a.upperBound..<chunk.endIndex) {
+                        st.running[String(chunk[a.upperBound..<b.lowerBound])] = nil
+                    }
+                }
+            }
+        }
+        return true
+    }; if !more { break } }
+    let now = Date().timeIntervalSince1970 * 1000
+    st.running = st.running.filter { ($0.value.until ?? .infinity) > now && now - $0.value.since < 12 * 3600 * 1000 }
+    if st.uses.count > 200 { st.uses = [:] }
+    taskScans[path] = st
+    return Array(st.running.values)
 }
 
 func group(_ agents: [Agent]) -> [Project] {
@@ -1181,7 +1270,7 @@ final class VillageLayerView: NSView {
             case .sit(let icon): al.setBadge(pixelEmoji(icon, 44), height: 18)
             case .stretch: al.setBadge(nil, height: 0)
             }
-        case .working where a.waitingCommand: al.setBadge(pixelEmoji("⏳", 44), height: 20)   // รอ command
+        case .working where a.waitingCommand: al.setBadge(pixelEmoji(a.tool == "Monitor" ? "📡" : "⏳", 44), height: 20)   // รอ command / monitor
         case .working: al.setBadge(toolProp(a.tool).flatMap { sprite($0) }, height: 20)
         default: al.setBadge(nil, height: 0)
         }
@@ -1489,6 +1578,11 @@ struct AgentGroveApp: App {
 
     init() {
         // AGENT_GROVE_LIST=1 → พิมพ์สถานะ agent ที่อ่านได้ (ไว้ตรวจแหล่งข้อมูล) แล้วออก
+        // AGENT_GROVE_TASKS=<transcript.jsonl> → พิมพ์งานเบื้องหลังที่ยังไม่จบ แล้วออก
+        if let path = ProcessInfo.processInfo.environment["AGENT_GROVE_TASKS"] {
+            for t in backgroundTasks(path) { print(t.id, t.kind, Int((Date().timeIntervalSince1970 * 1000 - t.since) / 1000), "s", t.desc ?? "") }
+            exit(0)
+        }
         if ProcessInfo.processInfo.environment["AGENT_GROVE_LIST"] != nil {
             let now = Date().timeIntervalSince1970 * 1000
             for a in collect() {

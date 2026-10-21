@@ -8,6 +8,7 @@
 - **🏢 ห้องทำงาน (ขวา)** เมื่อ agent เริ่มทำงาน จะสุ่มสัตว์หนึ่งตัวจากห้องนั่งเล่นเดินไปนั่งโต๊ะ คนโปรเจกต์เดียวกันนั่งติดกันพร้อมสีและป้ายชื่อโปรเจกต์ ถือของตามเครื่องมือที่ใช้อยู่ (terminal, หนังสือ, แว่นขยาย, กล่องเครื่องมือ …)
 - **ลูกสัตว์** = subagent ที่ agent เรียกขึ้นมา นั่งข้างตัวหลัก แล้วเดินออกไปเมื่องานจบ
 - **⏳ รอ command** เครื่องมือ (เช่น build/test) รันค้างเกิน 5 วินาที: ตัวละครลุกเดินไปยืนรอที่พื้นโล่งในห้อง แล้วกลับมานั่ง วนจนเสร็จ + นาฬิกาทราย + คำสั่งและเวลาในรายชื่อ
+- **📡 รอ Monitor / ⚙️ งานเบื้องหลัง** (Bash `run_in_background`) ที่ยังไม่จบ: ถือว่ายังรออยู่ แม้ session จะว่างแล้ว ตัวละครเดินรอในห้องทำงานเหมือนรอ command
 - **❗ รออนุญาต / ❓ รอคำสั่ง** แสดงบนตัวละคร และสรุปบน menu bar (`🐾 2+1 ⏳1 ❗1`)
 - **โหมดมืด** = ป่ากลางคืนมีหิ่งห้อย
 
@@ -16,6 +17,7 @@
 | ไฟล์ | ใช้ทำอะไร |
 |---|---|
 | `~/.claude/sessions/*.json` | Claude Code session ที่เปิดอยู่ (busy/idle, โฟลเดอร์) |
+| `~/.claude/projects/<โปรเจกต์>/<session>.jsonl` | เครื่องมือที่รันค้าง, งานเบื้องหลัง/Monitor ที่ยังไม่จบ (อ่านต่อจากรอบก่อน ไม่อ่านซ้ำทั้งไฟล์) |
 | `~/.claude/projects/<โปรเจกต์>/<session>/subagents/` | subagent ที่กำลังทำงาน + เครื่องมือล่าสุด |
 | `~/Library/Application Support/orca/agent-hooks/last-status.json` | สถานะจากแอป Orca (ถ้ามี): รออนุญาต/รอคำสั่ง, ชื่อเครื่องมือ, prompt ล่าสุด |
 
@@ -83,6 +85,7 @@ python3 tools/cut_magenta.py sheet.jpeg Sprites \
 ```sh
 AGENT_GROVE_SNAPSHOT=/tmp/shot.png "build/Agent Grove.app/Contents/MacOS/AgentGrove"                  # ข้อมูลจริง
 AGENT_GROVE_SNAPSHOT=/tmp/demo.png AGENT_GROVE_DEMO=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove" # ข้อมูลจำลอง 24 ตัว
+AGENT_GROVE_TASKS=~/.claude/projects/<โปรเจกต์>/<session>.jsonl "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # งานเบื้องหลังที่ยังไม่จบ
 AGENT_GROVE_LIST=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"                                       # พิมพ์สถานะที่อ่านได้
 AGENT_GROVE_SNAPSHOT=/tmp/dogs.png AGENT_GROVE_MODE=dogs "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # โหมดสุนัข
 AGENT_GROVE_SNAPSHOT=/tmp/r.png AGENT_GROVE_REARRANGE=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"   # ผังห้องนั่งเล่นรอบถัดไป
