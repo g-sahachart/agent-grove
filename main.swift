@@ -517,15 +517,13 @@ struct Lounge {
     var doorY: CGFloat { walkY(rows - 1) }
     var bottom: CGFloat { top + 80 + CGFloat(rows - 1) * Self.rowGap + 34 + 20 + extra }
     var aisle: CGFloat { right - 22 }
-    /// รอบการจัดห้อง — เพิ่มขึ้นเป็นระยะ → ได้ผังที่นั่งใหม่
-    nonisolated(unsafe) static var epoch = 0
     /// ที่นั่งกระจายทั่วห้องแบบไม่เป็นแถว (สุ่มแบบเว้นระยะห่าง; seed ตามขนาดห้อง + รอบการจัดห้อง)
     var spots: [CGPoint] {
-        let key = "\(left):\(right):\(top):\(bottom):\(count):\(Self.epoch)"
+        let key = "\(left):\(right):\(top):\(bottom):\(count)"
         if let c = Self.cache[key] { return c }
         if Self.cache.count > 8 { Self.cache = [:] }
         let x0 = left + 44, x1 = aisle - 34, y0 = top + 86, y1 = bottom - 46
-        var rng = SeededRNG(seed: UInt64(max(1, Int(right - left) * 1009 + Int(bottom - top) + Self.epoch * 7919)))
+        var rng = SeededRNG(seed: UInt64(max(1, Int(right - left) * 1009 + Int(bottom - top))))
         var pts: [CGPoint] = []
         for _ in 0..<(rows * perRow) {   // best-candidate: สุ่ม 30 จุด เลือกจุดที่ห่างจากตัวอื่นที่สุด
             var best = CGPoint(x: x0, y: y0), bestD: CGFloat = -1
@@ -811,7 +809,6 @@ final class VillageLayerView: NSView {
     private var agents: [String: AgentLayer] = [:]
     private var scenery: [CALayer] = []   // ห้อง เฟอร์นิเจอร์ — วาดใหม่เมื่อขนาด/จำนวนแถวเปลี่ยน
     private var sceneryKey = ""
-    private var sofas: [CALayer] = []     // เฟอร์นิเจอร์ห้องนั่งเล่น (ลำดับตามที่นั่ง k) — เลื่อนไปที่ใหม่เมื่อจัดห้องใหม่
     private var colorOfProject: [String: NSColor] = [:]     // project key → สีประจำโปรเจกต์ (ใช้ใน popover)
     private let popover = NSPopover()                         // คลิกตัวละคร → บอกว่าตัวนี้กำลังทำอะไร
     private var popoverAid: String?
@@ -820,57 +817,42 @@ final class VillageLayerView: NSView {
     private var L = VillageLayout(width: 0, lounging: 0, seated: 0)
 
     private var restTimer: Timer?
-    private var restTicks = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true
-        // ทุก 20 วิ: ตัวที่พักอยู่ ~1 ใน 3 เปลี่ยนอิริยาบถ (ไม่เปลี่ยนพร้อมกันทั้งห้อง)
+        // ทุก 20 วิ: หนึ่งตัวย้ายที่นั่ง + ตัวอื่น ~1 ใน 3 เปลี่ยนอิริยาบถ (ไม่เปลี่ยนพร้อมกันทั้งห้อง)
         restTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.shuffleRest() }
         restTimer?.tolerance = 5
     }
 
     private func shuffleRest() {
         guard animate else { return }
-        restTicks += 1
-        if restTicks % 9 == 0 { rearrangeLounge(); return }   // ~3 นาที: จัดห้องนั่งเล่นใหม่
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         let cap = L.lounge.rows * L.lounge.perRow
-        // บางรอบ: ตัวว่างหนึ่งตัวเดินออกไป แล้วมีสัตว์ชนิดใหม่เดินเข้ามาแทน
+        // บางรอบ: ตัวว่างหนึ่งตัวเดินออกไป แล้วมีสัตว์ชนิดใหม่เดินเข้ามาแทน (รอบนั้นไม่มีใครย้ายที่)
+        var someoneMoved = false
         if Int.random(in: 0..<3) == 0, let out = poolIds.filter({ seats[$0]?.hall == false }).randomElement() {
-            sendAway(out); place(walking: true)
+            sendAway(out); place(walking: true); someoneMoved = true
         }
-        for (id, al) in agents where al.state == .idle && !leaving.contains(id) && Int.random(in: 0..<3) == 0 {
-            guard let a = al.agent, var spot = al.spot else { continue }
+        let resting = agents.filter { $0.value.state == .idle && !leaving.contains($0.key) && seats[$0.key]?.hall == false }
+        // ย้ายที่ทีละตัว: สุ่มหนึ่งตัวลุกไปนั่งเบาะว่าง (เฟอร์นิเจอร์อยู่ที่เดิม)
+        if !someoneMoved, let (id, al) = resting.randomElement(), let a = al.agent {
+            let taken = Set(seats.values.filter { !$0.hall }.map(\.k))
+            if let k = (0..<cap).filter({ !taken.contains($0) }).randomElement() {
+                seats[id] = (false, k); al.rest = .random()
+                apply(a, al, spot: L.lounge.seat(k).p, walking: true)
+                someoneMoved = true
+            }
+        }
+        // ตัวอื่นๆ ~1 ใน 3 แค่เปลี่ยนอิริยาบถอยู่กับที่
+        for (_, al) in resting where Int.random(in: 0..<3) == 0 {
+            guard let a = al.agent, let spot = al.spot, al.root.animation(forKey: "move") == nil else { continue }
             var next = RestPose.random()
             while next == al.rest { next = .random() }
             al.rest = next
-            // 1 ใน 3 ของตัวที่ขยับ: ลุกเดินไปนั่งโซฟาว่างตัวอื่น
-            var walk = false
-            if Int.random(in: 0..<3) == 0 {
-                let taken = Set(seats.values.filter { !$0.hall }.map(\.k))
-                if let k = (0..<cap).filter({ !taken.contains($0) }).randomElement() {
-                    seats[id] = (false, k); spot = L.lounge.seat(k).p; walk = true
-                }
-            }
-            apply(a, al, spot: spot, walking: walk)
+            apply(a, al, spot: spot, walking: false)
         }
-        CATransaction.commit()
-    }
-    /// ย้ายโซฟาไปผังใหม่ (เลื่อนช้าๆ) แล้วให้ตัวที่นั่งอยู่เดินตามไปนั่งที่เดิมของตัวเองในผังใหม่
-    func rearrangeLounge() {
-        Lounge.epoch += 1
-        let lo = L.lounge
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        for (k, l) in sofas.enumerated() {
-            let p = lo.seat(k).p, to = CGPoint(x: p.x, y: Y(p.y + 10))
-            let a = CABasicAnimation(keyPath: "position")
-            a.fromValue = NSValue(point: l.position); a.toValue = NSValue(point: to)
-            a.duration = 1.6; a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            l.position = to; l.zPosition = depth(p.y) - 0.3
-            l.add(a, forKey: "move")
-        }
-        CATransaction.commit()
-        place(walking: true)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -916,7 +898,7 @@ final class VillageLayerView: NSView {
         let key = "\(bounds.width)x\(bounds.height):\(lo.rows):\(h.tables):\(isNight):\(animate):\(mode)"
         guard key != sceneryKey, let root = layer else { return }
         sceneryKey = key
-        scenery.forEach { $0.removeFromSuperlayer() }; scenery = []; sofas = []
+        scenery.forEach { $0.removeFromSuperlayer() }; scenery = []
         func add(_ l: CALayer, z: CGFloat) { l.zPosition = z; root.addSublayer(l); scenery.append(l) }
         @discardableResult
         func rect(_ x: CGFloat, _ top: CGFloat, _ w: CGFloat, _ hh: CGFloat, _ c: NSColor, z: CGFloat = -1, radius: CGFloat = 0) -> CALayer {
@@ -1267,10 +1249,10 @@ final class VillageLayerView: NSView {
                 let inner = CALayer(); inner.frame = bed.bounds.insetBy(dx: 7, dy: 6).offsetBy(dx: 0, dy: 2); inner.cornerRadius = 7
                 inner.backgroundColor = c((0.98, 0.95, 0.88), (0.45, 0.43, 0.4)).cgColor
                 bed.addSublayer(outer); bed.addSublayer(inner)
-                add(bed, z: depth(s.p.y) - 0.3); sofas.append(bed)
+                add(bed, z: depth(s.p.y) - 0.3)
                 continue
             }
-            sofas.append(put(["sofa_orange", "sofa_blue", "beanbag"][kind], x: s.p.x, top: s.p.y + 10, h: kind == 2 ? 36 : 44, z: depth(s.p.y) - 0.3))
+            put(["sofa_orange", "sofa_blue", "beanbag"][kind], x: s.p.x, top: s.p.y + 10, h: kind == 2 ? 36 : 44, z: depth(s.p.y) - 0.3)
         }
 
         // 🏢 ห้องทำงาน
@@ -1982,8 +1964,6 @@ struct AgentGroveApp: App {
                     v.click(at: CGPoint(x: c[0], y: Double(h) - c[1]))
                     print(v.popoverText ?? "(ไม่โดนตัวไหน)")
                 }
-                // AGENT_GROVE_REARRANGE=n → จัดห้องนั่งเล่นใหม่ n รอบก่อนถ่าย (ตรวจผังที่เปลี่ยน)
-                for _ in 0..<(Int(ProcessInfo.processInfo.environment["AGENT_GROVE_REARRANGE"] ?? "") ?? 0) { v.rearrangeLounge() }
                 v.layer!.sublayers = v.layer!.sublayers?.sorted { $0.zPosition < $1.zPosition }  // render(in:) ไม่สน zPosition
                 let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w * 2), pixelsHigh: Int(h * 2), bitsPerSample: 8,
                                            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,

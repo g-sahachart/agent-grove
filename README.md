@@ -4,7 +4,7 @@
 
 ![Agent Grove](docs/screenshot.png)
 
-- **🛋️ ห้องนั่งเล่น (ซ้าย)** สัตว์หลายชนิดนั่งเล่น นอน อ่านหนังสือ เล่นเกม ลุกสลับโซฟา ที่นั่งกระจายทั่วห้องและจัดผังใหม่ทุก ~3 นาที และมีตัวใหม่เดินเข้า-ออกจากป่าเป็นระยะ
+- **🛋️ ห้องนั่งเล่น (ซ้าย)** สัตว์หลายชนิดนั่งเล่น นอน อ่านหนังสือ เล่นเกม ที่นั่งกระจายทั่วห้อง ทุก 20 วินาทีมีหนึ่งตัวลุกย้ายไปเบาะว่าง (เฟอร์นิเจอร์อยู่กับที่) และมีตัวใหม่เดินเข้า-ออกจากป่าเป็นระยะ
 - **🏢 ห้องทำงาน (ขวา)** เมื่อ agent เริ่มทำงาน จะสุ่มสัตว์หนึ่งตัวจากห้องนั่งเล่นเดินไปนั่งโต๊ะ คนโปรเจกต์เดียวกันนั่งติดกัน ถือของตามเครื่องมือที่ใช้อยู่ (terminal, หนังสือ, แว่นขยาย, กล่องเครื่องมือ …)
 - **คลิกตัวละคร** → popover บอกว่าเป็น agent ไหน โปรเจกต์อะไร กำลังทำอะไร (เครื่องมือ / คำสั่งที่รอพร้อมเวลา / งานล่าสุด) ตัวในห้องนั่งเล่นบอกว่ากำลังพักทำอะไร
 - **ลูกสัตว์** = subagent ที่ agent เรียกขึ้นมา นั่งข้างตัวหลัก แล้วเดินออกไปเมื่องานจบ
@@ -91,7 +91,6 @@ AGENT_GROVE_TASKS=~/.claude/projects/<โปรเจกต์>/<session>.jsonl 
 AGENT_GROVE_SNAPSHOT=/tmp/n.png AGENT_GROVE_APPEARANCE=dark "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # บังคับกลางวัน/กลางคืน (light|dark)
 AGENT_GROVE_LIST=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"                                       # พิมพ์สถานะที่อ่านได้
 AGENT_GROVE_SNAPSHOT=/tmp/dogs.png AGENT_GROVE_MODE=dogs "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # โหมดสุนัข
-AGENT_GROVE_SNAPSHOT=/tmp/r.png AGENT_GROVE_REARRANGE=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"   # ผังห้องนั่งเล่นรอบถัดไป
 AGENT_GROVE_SNAPSHOT=/tmp/c.png AGENT_GROVE_DEMO=1 AGENT_GROVE_CLICK=490,130 "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # จำลองคลิก (x,y จากมุมซ้ายบน) + พิมพ์เนื้อหา popover
 AGENT_GROVE_SNAPSHOT=/tmp/p.png AGENT_GROVE_DEMO=1 AGENT_GROVE_PACE=0.45 "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # ท่าเดินรอ command ณ เวลา 0–1
 ```
