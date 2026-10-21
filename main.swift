@@ -489,7 +489,8 @@ struct Hall {
     func tableBase(_ t: Int) -> CGFloat { top + 100 + extra / 2 + CGFloat(t / 2) * Self.tableGap }   // ห้องยืด → โต๊ะอยู่กึ่งกลาง
     func walkY(_ t: Int) -> CGFloat { tableBase(t) + 64 }   // ทางเดินหน้าแถวหน้า (ใต้ป้ายชื่อกลุ่ม)
     var doorY: CGFloat { walkY(tables - 1) }
-    var bottom: CGFloat { top + 100 + CGFloat(rows - 1) * Self.tableGap + 64 + 20 + extra }
+    var bottom: CGFloat { top + 100 + CGFloat(rows - 1) * Self.tableGap + 64 + 20 + Self.lounge + extra }
+    static let lounge: CGFloat = 50   // พื้นโล่งใต้แถวสุดท้าย (ที่ยืนรอ command)
     var aisle: CGFloat { left + 24 }
     func seat(_ k: Int) -> (p: CGPoint, front: Bool, table: Int) {
         let t = k / (2 * perSide), r = k % (2 * perSide), front = r < perSide, i = r % perSide
@@ -1242,8 +1243,8 @@ final class VillageLayerView: NSView {
         let start = CACurrentMediaTime() + delay
         func add(_ l: CALayer, _ anim: CAAnimation) { anim.beginTime = start; l.add(anim, forKey: "loop") }
         switch a.state {
-        case .working where a.waitingCommand:   // นั่งรอนิ่งๆ โยกตัวช้าๆ + นาฬิกาทรายพลิกกลับไปมา
-            add(al.body, loop([basic("transform.rotation.z", -0.025, 0.025)], 2.2))
+        case .working where a.waitingCommand:   // รอ command: ลุกเดินไปมาหน้าโต๊ะ หยุดยืนรอ แล้วกลับมานั่ง วนจนกว่าจะเสร็จ
+            pace(al, c, spot: spot, start: start)
             let flip = CAKeyframeAnimation(keyPath: "transform.rotation.z")
             flip.values = [0, 0, Double.pi, Double.pi]; flip.keyTimes = [0, 0.4, 0.5, 1]
             flip.duration = 2.4; flip.repeatCount = .infinity; flip.isAdditive = true
@@ -1277,6 +1278,84 @@ final class VillageLayerView: NSView {
                 look.beginTime = start; al.root.add(look, forKey: "look")
             }
         }
+    }
+
+    /// เดินวนรอ: ลุกจากโต๊ะ → ทางเดินหน้าแถว → ทางเดินกลางห้อง → ยืนรอที่พื้นที่ว่าง (ห่างโต๊ะ) → เดินกลับมานั่ง
+    private func pace(_ al: AgentLayer, _ c: Critter, spot: CGPoint, start: CFTimeInterval) {
+        let h = L.hall, base0 = h.tableBase(0)
+        let r = max(0, Int(((spot.y - base0) / Hall.tableGap).rounded()))
+        let front = spot.y > base0 + CGFloat(r) * Hall.tableGap
+        let ey = front ? h.walkY(r * 2) : h.tableBase(r * 2) - 56            // ทางเดินหน้า/หลังแถวนั้น
+        // ที่ว่าง: พื้นล่างสุดใต้แถวสุดท้าย ถ้าไม่มีที่ → ทางเดินกลางห้อง (ระหว่างโต๊ะซ้าย-ขวา)
+        let lowTop = h.walkY(h.tables - 1) + 8, lowBottom = h.bottom - 16
+        let lanes = [base0 - 56] + stride(from: 0, to: h.tables, by: 2).map { h.walkY($0) }   // แนวทางเดินระหว่างแถว (ไม่มีเก้าอี้)
+        var target = CGPoint(x: h.midX + .random(in: -14...14), y: lanes.randomElement()!)
+        if lowBottom - lowTop > 20 {   // มีพื้นโล่งด้านล่าง → ไปยืนตรงนั้น (ทางเดินกลางมีเก้าอี้หัวโต๊ะ)
+            // ใต้แนวโต๊ะของตัวเอง ± สุ่มเล็กน้อย → แต่ละตัวยืนคนละที่ ไม่ทับกัน
+            target = CGPoint(x: min(h.right - 50, max(h.left + 50, spot.x + .random(in: -30...30))), y: .random(in: lowTop...lowBottom))
+        }
+        var pts = [spot, CGPoint(x: spot.x, y: ey), CGPoint(x: h.midX, y: ey)]
+        pts += target.y > h.walkY(h.tables - 1) ? [CGPoint(x: h.midX, y: target.y), target] : [target]
+        // เส้นทางไป + กลับ; เวลา: นั่งพัก 1.5 วิ → เดิน → ยืนรอ 2–4 วิ → เดินกลับ → นั่ง 1.5 วิ
+        var dist: [CGFloat] = [0]
+        for k in 1..<pts.count { dist.append(dist[k - 1] + hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y)) }
+        let speed = Village.walkSpeed * 0.6, walkT = Double(dist.last! / speed)
+        let sit = 1.5, wait = Double.random(in: 2...4), D = sit + walkT + wait + walkT + sit
+        var plan: [(t: Double, x: CGFloat, y: CGFloat, face: CGFloat)] = [(0, 0, 0, 1)]
+        func off(_ p: CGPoint) -> (CGFloat, CGFloat) { (p.x - spot.x, -(p.y - spot.y)) }   // offset บนจอ (y กลับด้าน)
+        for k in 0..<pts.count {   // ขาไป
+            let o = off(pts[k]), dx = k > 0 ? pts[k].x - pts[k - 1].x : 0
+            plan.append(((sit + Double(dist[k] / speed)) / D, o.0, o.1, abs(dx) > 1 ? (dx < 0 ? -1 : 1) : (plan.last?.face ?? 1)))
+        }
+        let back = sit + walkT + wait
+        for k in stride(from: pts.count - 1, through: 0, by: -1) {   // ขากลับ
+            let o = off(pts[k]), dx = k < pts.count - 1 ? pts[k].x - pts[k + 1].x : 0
+            plan.append(((back + Double((dist.last! - dist[k]) / speed)) / D, o.0, o.1,
+                         abs(dx) > 1 ? (dx < 0 ? -1 : 1) : (plan.last?.face ?? 1)))
+        }
+        plan.append((1, 0, 0, 1))
+        if let f = Double(ProcessInfo.processInfo.environment["AGENT_GROVE_PACE"] ?? "") {   // ดีบัก: หยุดภาพที่เวลา f (0–1)
+            guard let k = plan.lastIndex(where: { $0.t <= f }), k + 1 < plan.count else { return }
+            let a = plan[k], b = plan[k + 1], u = CGFloat((f - a.t) / max(b.t - a.t, 0.0001))
+            al.root.position.x += a.x + (b.x - a.x) * u; al.root.position.y += a.y + (b.y - a.y) * u
+            if f > sit / D && f < (D - sit) / D { al.root.zPosition = 90 }
+            if a.x != b.x || a.y != b.y { al.show(c.walk ?? c.stand) }
+            al.body.transform = CATransform3DMakeScale(b.face, 1, 1)
+            return
+        }
+        let move = CAKeyframeAnimation(keyPath: "position")
+        move.values = plan.map { NSValue(point: CGPoint(x: $0.x, y: $0.y)) }
+        move.keyTimes = plan.map { NSNumber(value: $0.t) }
+        move.isAdditive = true; move.duration = D; move.repeatCount = .infinity; move.beginTime = start
+        al.root.add(move, forKey: "pace")
+        // ออกจากที่นั่งแล้วอยู่หน้าสุด (ไม่โดนโต๊ะบัง)
+        let z = CAKeyframeAnimation(keyPath: "zPosition")
+        z.values = [al.root.zPosition, 90, al.root.zPosition]; z.keyTimes = [0, NSNumber(value: sit / D), NSNumber(value: (D - sit) / D)]
+        z.calculationMode = .discrete; z.duration = D; z.repeatCount = .infinity; z.beginTime = start
+        al.root.add(z, forKey: "pace-z")
+        // ภาพ: ช่วงที่เคลื่อนที่สลับเฟรมเดินทุก 0.18 วิ ช่วงหยุดใช้ท่ายืน; กรอบตามขนาดภาพแต่ละเฟรม (ไม่งั้นตัวหด)
+        var names: [String] = [], times: [Double] = [], faces: [Double] = []
+        for k in 1..<plan.count {
+            let a = plan[k - 1], b = plan[k], moving = a.x != b.x || a.y != b.y
+            var t = a.t, i = 0
+            repeat {
+                names.append(moving ? ((i % 2 == 0 ? c.walk : c.walk2) ?? c.stand) : c.stand)
+                times.append(t); faces.append(Double(moving ? b.face : (b.face == 0 ? 1 : b.face)))
+                t += 0.18 / D; i += 1
+            } while moving && t < b.t
+        }
+        names.append(c.stand); times.append(1); faces.append(1)
+        func discrete(_ key: String, _ values: [Any]) {
+            let k = CAKeyframeAnimation(keyPath: key); k.values = values; k.keyTimes = times.map { NSNumber(value: $0) }
+            k.calculationMode = .discrete; k.duration = D; k.repeatCount = .infinity; k.beginTime = start
+            al.body.add(k, forKey: "pace-" + key)
+        }
+        discrete("contents", names.map { sprite($0) as Any })
+        discrete("bounds", names.map { n -> NSValue in
+            let img = sprite(n)
+            return NSValue(rect: CGRect(x: 0, y: 0, width: CGFloat(img?.width ?? 1) * al.scale, height: CGFloat(img?.height ?? 1) * al.scale))
+        })
+        discrete("transform.scale.x", faces)
     }
 
     private func basic(_ key: String, _ from: CGFloat, _ to: CGFloat) -> CABasicAnimation {
@@ -1425,14 +1504,15 @@ struct AgentGroveApp: App {
                 if ProcessInfo.processInfo.environment["AGENT_GROVE_DEMO"] != nil {  // จำลองครบทุกสถานะ + หลายแถว
                     let states: [AgentState] = [.working, .idle, .blocked, .waiting, .working, .working]
                     agents = (0..<24).map { k in Agent(name: "agent-\(k)", cwd: "/demo/\(k)", project: "proj-\(k / 3)",
-                                                       state: states[k % states.count], tool: ["Read", "Bash", "Grep", "Edit"][k % 4], alive: true) }
+                                                       state: states[k % states.count], tool: ["Read", "Bash", "Grep", "Edit"][k % 4], alive: true,
+                                                       runningSince: ProcessInfo.processInfo.environment["AGENT_GROVE_PACE"] != nil && k % 4 == 1 ? 0 : nil) }
                 }
                 let mode = AnimalMode(rawValue: ProcessInfo.processInfo.environment["AGENT_GROVE_MODE"] ?? "") ?? AnimalMode.saved
                 (critters, babies) = loadCritters(mode)
                 let projects = group(agents), w: CGFloat = 900, h = Village.height(w, projects)
                 let v = VillageLayerView(frame: NSRect(x: 0, y: 0, width: w, height: h))
                 v.layer!.backgroundColor = NSColor(red: 0.87, green: 0.95, blue: 1, alpha: 1).cgColor
-                v.update(projects, animate: false, mode: mode)
+                v.update(projects, animate: ProcessInfo.processInfo.environment["AGENT_GROVE_PACE"] != nil, mode: mode)
                 // AGENT_GROVE_REARRANGE=n → จัดห้องนั่งเล่นใหม่ n รอบก่อนถ่าย (ตรวจผังที่เปลี่ยน)
                 for _ in 0..<(Int(ProcessInfo.processInfo.environment["AGENT_GROVE_REARRANGE"] ?? "") ?? 0) { v.rearrangeLounge() }
                 v.layer!.sublayers = v.layer!.sublayers?.sorted { $0.zPosition < $1.zPosition }  // render(in:) ไม่สน zPosition

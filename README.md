@@ -7,7 +7,7 @@
 - **🛋️ ห้องนั่งเล่น (ซ้าย)** สัตว์หลายชนิดนั่งเล่น นอน อ่านหนังสือ เล่นเกม ลุกสลับโซฟา ที่นั่งกระจายทั่วห้องและจัดผังใหม่ทุก ~3 นาที และมีตัวใหม่เดินเข้า-ออกจากป่าเป็นระยะ
 - **🏢 ห้องทำงาน (ขวา)** เมื่อ agent เริ่มทำงาน จะสุ่มสัตว์หนึ่งตัวจากห้องนั่งเล่นเดินไปนั่งโต๊ะ คนโปรเจกต์เดียวกันนั่งติดกันพร้อมสีและป้ายชื่อโปรเจกต์ ถือของตามเครื่องมือที่ใช้อยู่ (terminal, หนังสือ, แว่นขยาย, กล่องเครื่องมือ …)
 - **ลูกสัตว์** = subagent ที่ agent เรียกขึ้นมา นั่งข้างตัวหลัก แล้วเดินออกไปเมื่องานจบ
-- **⏳ รอ command** เครื่องมือ (เช่น build/test) รันค้างเกิน 5 วินาที: นาฬิกาทรายบนตัวละคร + คำสั่งและเวลาในรายชื่อ
+- **⏳ รอ command** เครื่องมือ (เช่น build/test) รันค้างเกิน 5 วินาที: ตัวละครลุกเดินไปยืนรอที่พื้นโล่งในห้อง แล้วกลับมานั่ง วนจนเสร็จ + นาฬิกาทราย + คำสั่งและเวลาในรายชื่อ
 - **❗ รออนุญาต / ❓ รอคำสั่ง** แสดงบนตัวละคร และสรุปบน menu bar (`🐾 2+1 ⏳1 ❗1`)
 - **โหมดมืด** = ป่ากลางคืนมีหิ่งห้อย
 
@@ -86,6 +86,7 @@ AGENT_GROVE_SNAPSHOT=/tmp/demo.png AGENT_GROVE_DEMO=1 "build/Agent Grove.app/Con
 AGENT_GROVE_LIST=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"                                       # พิมพ์สถานะที่อ่านได้
 AGENT_GROVE_SNAPSHOT=/tmp/dogs.png AGENT_GROVE_MODE=dogs "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # โหมดสุนัข
 AGENT_GROVE_SNAPSHOT=/tmp/r.png AGENT_GROVE_REARRANGE=1 "build/Agent Grove.app/Contents/MacOS/AgentGrove"   # ผังห้องนั่งเล่นรอบถัดไป
+AGENT_GROVE_SNAPSHOT=/tmp/p.png AGENT_GROVE_DEMO=1 AGENT_GROVE_PACE=0.45 "build/Agent Grove.app/Contents/MacOS/AgentGrove"  # ท่าเดินรอ command ณ เวลา 0–1
 ```
 
 ## โครงสร้าง

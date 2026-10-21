@@ -49,3 +49,8 @@ dogs Gemini_Generated_Image_5thkgo5thkgo5thk.jpeg $(d6 akita) chowchow_{stand,wa
 PUPS=(shiba corgi - golden husky pug - dalmatian)
 python3 cut_magenta.py --grid=8x3 "$DL/Gemini_Generated_Image_3m9c3x3m9c3x3m9c.jpeg" "$DOGS" \
   $(for p in stand walk walk2; do for b in $PUPS; do [[ $b == - ]] && printf "%s\n" - || echo baby_${b}_$p; done; done)
+
+# ท่ายืนที่ Gemini วาดหันซ้าย → กลับให้หันขวาเหมือนท่าเดิน (แอปถือว่าภาพหันขวา)
+python3 -c 'import sys; from PIL import Image, ImageOps
+for f in sys.argv[1:]: ImageOps.mirror(Image.open(f)).save(f)' \
+  "$DOGS"/{bordercollie,husky,shepherd}_stand.png "$OUT"/{beaver,cheetah,fox,giraffe,lion}_stand.png
