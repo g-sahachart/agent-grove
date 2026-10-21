@@ -423,12 +423,15 @@ struct Lounge {
     var doorY: CGFloat { walkY(rows - 1) }
     var bottom: CGFloat { top + 80 + CGFloat(rows - 1) * Self.rowGap + 34 + 20 + extra }
     var aisle: CGFloat { right - 22 }
-    /// ที่นั่งกระจายทั่วห้องแบบไม่เป็นแถว (สุ่มแบบเว้นระยะห่าง; seed คงที่ตามขนาดห้อง → ที่นั่งไม่ย้ายไปมา)
+    /// รอบการจัดห้อง — เพิ่มขึ้นเป็นระยะ → ได้ผังที่นั่งใหม่
+    nonisolated(unsafe) static var epoch = 0
+    /// ที่นั่งกระจายทั่วห้องแบบไม่เป็นแถว (สุ่มแบบเว้นระยะห่าง; seed ตามขนาดห้อง + รอบการจัดห้อง)
     var spots: [CGPoint] {
-        let key = "\(left):\(right):\(top):\(bottom):\(count)"
+        let key = "\(left):\(right):\(top):\(bottom):\(count):\(Self.epoch)"
         if let c = Self.cache[key] { return c }
+        if Self.cache.count > 8 { Self.cache = [:] }
         let x0 = left + 44, x1 = aisle - 34, y0 = top + 86, y1 = bottom - 46
-        var rng = SeededRNG(seed: UInt64(max(1, Int(right - left) * 1009 + Int(bottom - top))))
+        var rng = SeededRNG(seed: UInt64(max(1, Int(right - left) * 1009 + Int(bottom - top) + Self.epoch * 7919)))
         var pts: [CGPoint] = []
         for _ in 0..<(rows * perRow) {   // best-candidate: สุ่ม 30 จุด เลือกจุดที่ห่างจากตัวอื่นที่สุด
             var best = CGPoint(x: x0, y: y0), bestD: CGFloat = -1
@@ -646,12 +649,14 @@ final class VillageLayerView: NSView {
     private var agents: [String: AgentLayer] = [:]
     private var scenery: [CALayer] = []   // ห้อง เฟอร์นิเจอร์ — วาดใหม่เมื่อขนาด/จำนวนแถวเปลี่ยน
     private var sceneryKey = ""
+    private var sofas: [CALayer] = []     // เฟอร์นิเจอร์ห้องนั่งเล่น (ลำดับตามที่นั่ง k) — เลื่อนไปที่ใหม่เมื่อจัดห้องใหม่
     private var marks: [CALayer] = []     // พรมสีโปรเจกต์ + ป้ายกลุ่ม — วาดใหม่ทุกครั้งที่ที่นั่งเปลี่ยน
     private var projects: [Project] = []
     private var animate = false
     private var L = VillageLayout(width: 0, lounging: 0, seated: 0)
 
     private var restTimer: Timer?
+    private var restTicks = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true
@@ -662,6 +667,8 @@ final class VillageLayerView: NSView {
 
     private func shuffleRest() {
         guard animate else { return }
+        restTicks += 1
+        if restTicks % 9 == 0 { rearrangeLounge(); return }   // ~3 นาที: จัดห้องนั่งเล่นใหม่
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let cap = L.lounge.rows * L.lounge.perRow
         // บางรอบ: ตัวว่างหนึ่งตัวเดินออกไป แล้วมีสัตว์ชนิดใหม่เดินเข้ามาแทน
@@ -684,6 +691,22 @@ final class VillageLayerView: NSView {
             apply(a, al, spot: spot, walking: walk)
         }
         CATransaction.commit()
+    }
+    /// ย้ายโซฟาไปผังใหม่ (เลื่อนช้าๆ) แล้วให้ตัวที่นั่งอยู่เดินตามไปนั่งที่เดิมของตัวเองในผังใหม่
+    func rearrangeLounge() {
+        Lounge.epoch += 1
+        let lo = L.lounge
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        for (k, l) in sofas.enumerated() {
+            let p = lo.seat(k).p, to = CGPoint(x: p.x, y: Y(p.y + 10))
+            let a = CABasicAnimation(keyPath: "position")
+            a.fromValue = NSValue(point: l.position); a.toValue = NSValue(point: to)
+            a.duration = 1.6; a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            l.position = to; l.zPosition = depth(p.y) - 0.3
+            l.add(a, forKey: "move")
+        }
+        CATransaction.commit()
+        place(walking: true)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -728,7 +751,7 @@ final class VillageLayerView: NSView {
         let key = "\(bounds.width)x\(bounds.height):\(lo.rows):\(h.tables):\(isNight):\(animate)"
         guard key != sceneryKey, let root = layer else { return }
         sceneryKey = key
-        scenery.forEach { $0.removeFromSuperlayer() }; scenery = []
+        scenery.forEach { $0.removeFromSuperlayer() }; scenery = []; sofas = []
         func add(_ l: CALayer, z: CGFloat) { l.zPosition = z; root.addSublayer(l); scenery.append(l) }
         @discardableResult
         func rect(_ x: CGFloat, _ top: CGFloat, _ w: CGFloat, _ hh: CGFloat, _ c: NSColor, z: CGFloat = -1, radius: CGFloat = 0) -> CALayer {
@@ -869,7 +892,7 @@ final class VillageLayerView: NSView {
         for k in 0..<(lo.rows * lo.perRow) {
             let s = lo.seat(k)
             let kind = (k * 7 + 3) % 5 % 3   // สลับชนิดแบบไม่เป็นลำดับ
-            put(["sofa_orange", "sofa_blue", "beanbag"][kind], x: s.p.x, top: s.p.y + 10, h: kind == 2 ? 36 : 44, z: depth(s.p.y) - 0.3)
+            sofas.append(put(["sofa_orange", "sofa_blue", "beanbag"][kind], x: s.p.x, top: s.p.y + 10, h: kind == 2 ? 36 : 44, z: depth(s.p.y) - 0.3))
         }
 
         // 🏢 ห้องทำงาน
@@ -1410,6 +1433,8 @@ struct AgentGroveApp: App {
                 let v = VillageLayerView(frame: NSRect(x: 0, y: 0, width: w, height: h))
                 v.layer!.backgroundColor = NSColor(red: 0.87, green: 0.95, blue: 1, alpha: 1).cgColor
                 v.update(projects, animate: false, mode: mode)
+                // AGENT_GROVE_REARRANGE=n → จัดห้องนั่งเล่นใหม่ n รอบก่อนถ่าย (ตรวจผังที่เปลี่ยน)
+                for _ in 0..<(Int(ProcessInfo.processInfo.environment["AGENT_GROVE_REARRANGE"] ?? "") ?? 0) { v.rearrangeLounge() }
                 v.layer!.sublayers = v.layer!.sublayers?.sorted { $0.zPosition < $1.zPosition }  // render(in:) ไม่สน zPosition
                 let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w * 2), pixelsHigh: Int(h * 2), bitsPerSample: 8,
                                            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
