@@ -50,7 +50,10 @@ PUPS=(shiba corgi - golden husky pug - dalmatian)
 python3 cut_magenta.py --grid=8x3 "$DL/Gemini_Generated_Image_3m9c3x3m9c3x3m9c.jpeg" "$DOGS" \
   $(for p in stand walk walk2; do for b in $PUPS; do [[ $b == - ]] && printf "%s\n" - || echo baby_${b}_$p; done; done)
 
-# ท่ายืนที่ Gemini วาดหันซ้าย → กลับให้หันขวาเหมือนท่าเดิน (แอปถือว่าภาพหันขวา)
+# ภาพที่ Gemini วาดหันซ้าย → กลับให้หันขวา (แอปถือว่าภาพหันขวา แล้วพลิกเองตามทิศที่เดิน)
 python3 -c 'import sys; from PIL import Image, ImageOps
 for f in sys.argv[1:]: ImageOps.mirror(Image.open(f)).save(f)' \
-  "$DOGS"/{bordercollie,husky,shepherd}_stand.png "$OUT"/{beaver,cheetah,fox,giraffe,lion}_stand.png
+  "$DOGS"/{bordercollie,husky,shepherd}_stand.png "$DOGS"/{akita,chowchow,shiba,thairidgeback}_walk2.png \
+  "$OUT"/{beaver,cheetah,fox,lion,cat,crocodile,dog,leopard,otter,raccoon,redpanda,seal,turtle,wolf,zebra}_stand.png \
+  "$OUT"/{cat,crocodile,dog,frog,giraffe,leopard,otter,raccoon,redpanda,seal,turtle,wolf,zebra,axolotl,hamster}_walk.png \
+  "$OUT"/{swan,shark,koala,penguin}_walk2.png "$OUT"/{eagle,parrot}_{stand,walk,walk2,sit,sleep,alert}.png
