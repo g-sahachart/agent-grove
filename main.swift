@@ -423,19 +423,49 @@ struct Lounge {
     var doorY: CGFloat { walkY(rows - 1) }
     var bottom: CGFloat { top + 80 + CGFloat(rows - 1) * Self.rowGap + 34 + 20 + extra }
     var aisle: CGFloat { right - 22 }
+    /// ที่นั่งกระจายทั่วห้องแบบไม่เป็นแถว (สุ่มแบบเว้นระยะห่าง; seed คงที่ตามขนาดห้อง → ที่นั่งไม่ย้ายไปมา)
+    var spots: [CGPoint] {
+        let key = "\(left):\(right):\(top):\(bottom):\(count)"
+        if let c = Self.cache[key] { return c }
+        let x0 = left + 44, x1 = aisle - 34, y0 = top + 86, y1 = bottom - 46
+        var rng = SeededRNG(seed: UInt64(max(1, Int(right - left) * 1009 + Int(bottom - top))))
+        var pts: [CGPoint] = []
+        for _ in 0..<(rows * perRow) {   // best-candidate: สุ่ม 30 จุด เลือกจุดที่ห่างจากตัวอื่นที่สุด
+            var best = CGPoint(x: x0, y: y0), bestD: CGFloat = -1
+            for _ in 0..<30 {
+                let c = CGPoint(x: x0 + (x1 - x0) * rng.unit(), y: y0 + (y1 - y0) * rng.unit())
+                // ระยะแนวตั้งนับหนักกว่า (ตัวละครสูง ซ้อนกันแนวตั้งดูเบียด)
+                let d = pts.map { hypot($0.x - c.x, ($0.y - c.y) * 1.3) }.min() ?? .infinity
+                if d > bestD { best = c; bestD = d }
+            }
+            pts.append(CGPoint(x: best.x.rounded(), y: best.y.rounded()))
+        }
+        Self.cache[key] = pts
+        return pts
+    }
+    nonisolated(unsafe) private static var cache: [String: [CGPoint]] = [:]
     func seat(_ k: Int) -> (p: CGPoint, row: Int) {
-        let r = k / perRow, i = k % perRow
-        let pad = ((right - left - 40) - CGFloat(perRow) * Self.pitch) / 2
-        return (CGPoint(x: left + 20 + pad + Self.pitch * (CGFloat(i) + 0.5), y: seatY(r)), r)
+        let p = spots[k % spots.count]; return (p, row(of: p))
     }
     func contains(_ p: CGPoint) -> Bool { p.x > left && p.x < right && p.y > top && p.y < bottom }
     func row(of p: CGPoint) -> Int { (0..<rows).min { abs(seatY($0) - p.y) < abs(seatY($1) - p.y) } ?? 0 }
-    /// ที่นั่ง → ทางเดินหน้าแถว → ทางเดินข้างขวา → ประตู (ผนังขวา)
+    /// ที่นั่ง → ลงมาหน้าที่นั่ง → ทางเดินข้างขวา → ประตู (ผนังขวา)
     func exit(_ p: CGPoint) -> [CGPoint] {
-        let r = row(of: p)
-        var pts = [p, CGPoint(x: p.x, y: walkY(r))]
-        if r < rows - 1 { pts += [CGPoint(x: aisle, y: walkY(r)), CGPoint(x: aisle, y: doorY)] }
-        return pts + [CGPoint(x: right, y: doorY)]
+        let wy = min(p.y + 30, bottom - 12)
+        return [p, CGPoint(x: p.x, y: wy), CGPoint(x: aisle, y: wy), CGPoint(x: aisle, y: doorY), CGPoint(x: right, y: doorY)]
+    }
+    /// ย้ายที่ในห้อง: ลุกลงมาหน้าที่นั่ง → เดินไปหน้าที่ใหม่ → นั่ง
+    func move(_ a: CGPoint, _ b: CGPoint) -> [CGPoint] {
+        [a, CGPoint(x: a.x, y: min(a.y + 30, bottom - 12)), CGPoint(x: b.x, y: min(b.y + 30, bottom - 12)), b]
+    }
+}
+
+struct SeededRNG {
+    var state: UInt64
+    init(seed: UInt64) { state = seed | 1 }
+    mutating func unit() -> CGFloat {   // xorshift64* → [0, 1)
+        state ^= state >> 12; state ^= state << 25; state ^= state >> 27
+        return CGFloat((state &* 2685821657736338717) >> 11) / CGFloat(1 << 53)
     }
 }
 
@@ -838,7 +868,8 @@ final class VillageLayerView: NSView {
         // ที่นั่ง: โซฟาส้ม/โซฟาฟ้า/บีนแบ็ก สลับกัน — ตัวละครนั่งทับเบาะ (โซฟาอยู่ข้างหลัง)
         for k in 0..<(lo.rows * lo.perRow) {
             let s = lo.seat(k)
-            put(["sofa_orange", "sofa_blue", "beanbag"][k % 3], x: s.p.x, top: s.p.y + 10, h: k % 3 == 2 ? 36 : 44, z: depth(s.p.y) - 0.3)
+            let kind = (k * 7 + 3) % 5 % 3   // สลับชนิดแบบไม่เป็นลำดับ
+            put(["sofa_orange", "sofa_blue", "beanbag"][kind], x: s.p.x, top: s.p.y + 10, h: kind == 2 ? 36 : 44, z: depth(s.p.y) - 0.3)
         }
 
         // 🏢 ห้องทำงาน
@@ -1084,6 +1115,7 @@ final class VillageLayerView: NSView {
         }
         guard let ea = exit(a), let eb = exit(b) else { return [a, b] }
         let sameRoom = (lo.contains(a) && lo.contains(b)) || (h.contains(a) && h.contains(b))
+        if lo.contains(a) && lo.contains(b) { return lo.move(a, b) }
         if sameRoom {   // ย้ายที่นั่ง: แถวเดียวกันเดินตรง ไม่งั้นผ่านทางเดินในห้อง (ไม่ออกประตู)
             return abs(a.y - b.y) < 2 ? [a, b] : Array(ea.dropLast(2)) + eb.dropLast(2).reversed()
         }
