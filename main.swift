@@ -662,6 +662,21 @@ func pixelEmoji(_ s: String, _ px: Int) -> CGImage? {
     return m != .all && sprite(m.rawValue + "/" + name) != nil ? m.rawValue + "/" + name : name
 }
 
+/// ไอคอนเฉพาะโหมด (เช่น space/item_spinner) — ไม่มี → nil ให้ใช้ emoji เดิม
+@MainActor func themedIcon(_ name: String) -> CGImage? {
+    let n = themed(name); return n == name ? nil : sprite(n)
+}
+
+/// ภาพฉากหลังของโหมด (Sprites/<โหมด>/background.jpg) ถ้ามี
+@MainActor func backdrop(_ mode: AnimalMode) -> CGImage? {
+    let key = "backdrop:\(mode.rawValue)"
+    if let img = imageCache[key] { return img }
+    guard let url = Bundle.main.url(forResource: "background", withExtension: "jpg", subdirectory: mode.folder),
+          let src = CGImageSourceCreateWithURL(url as CFURL, nil), let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+    imageCache[key] = img
+    return img
+}
+
 /// วาดภาพหนึ่งภาพด้วย CGContext (พิกัด top-left แบบเดียวกับฉาก) — ของนิ่งจำนวนมากรวมเป็นภาพเดียว ประหยัด layer
 func paint(_ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
     let w = Int(size.width * 2), h = Int(size.height * 2)
@@ -934,16 +949,26 @@ final class VillageLayerView: NSView {
         if space {
             // 🚀 ธีมอวกาศ: ฟ้าดาว + เนบิวลา + ดาวเคราะห์ + ท่อเชื่อมระหว่างห้อง (โหมดมืด = เข้าเงาโลก มืดลง)
             root.backgroundColor = c((0.1, 0.11, 0.27), (0.03, 0.03, 0.1)).cgColor
-            for (nx, ny, r, col) in [(bounds.width * 0.85, CGFloat(30), CGFloat(280), NSColor(red: 1, green: 0.4, blue: 0.75, alpha: 1)),
-                                     (bounds.width * 0.12, L.height - 10, CGFloat(240), NSColor(red: 0.3, green: 0.85, blue: 1, alpha: 1)),
-                                     (bounds.width * 0.45, CGFloat(-60), CGFloat(320), NSColor(red: 0.55, green: 0.4, blue: 1, alpha: 1))] {
+            let art = backdrop(.space)   // มีภาพฉากหลัง (ดาวเคราะห์ + เนบิวลา) → ใช้แทนของที่วาดเอง
+            if let art {
+                let bg = CALayer(); bg.contents = art; bg.contentsGravity = .resizeAspectFill; bg.frame = bounds; bg.masksToBounds = true
+                add(bg, z: -2.5)
+                if n { let dim = CALayer(); dim.frame = bounds; dim.backgroundColor = NSColor(white: 0, alpha: 0.3).cgColor; add(dim, z: -2.4) }
+            }
+            let glows: [(CGFloat, CGFloat, CGFloat, NSColor)] = art != nil ? [] : [
+                (bounds.width * 0.85, 30, 280, NSColor(red: 1, green: 0.4, blue: 0.75, alpha: 1)),
+                (bounds.width * 0.12, L.height - 10, 240, NSColor(red: 0.3, green: 0.85, blue: 1, alpha: 1)),
+                (bounds.width * 0.45, -60, 320, NSColor(red: 0.55, green: 0.4, blue: 1, alpha: 1))]
+            for (nx, ny, r, col) in glows {   // เนบิวลา (วาดเอง เมื่อไม่มีภาพฉากหลัง)
                 let g = CAGradientLayer(); g.type = .radial
                 g.colors = [col.withAlphaComponent(n ? 0.22 : 0.32).cgColor, col.withAlphaComponent(0).cgColor]
                 g.startPoint = CGPoint(x: 0.5, y: 0.5); g.endPoint = CGPoint(x: 1, y: 1)
                 g.bounds = CGRect(x: 0, y: 0, width: r * 2, height: r * 2); g.position = CGPoint(x: nx, y: Y(ny)); add(g, z: -2.5)
             }
-            let stars = CALayer(); stars.contents = starField(bounds.size, density: n ? 1.4 : 1)   // ดาวทั้งหมดในภาพเดียว
-            stars.frame = bounds; add(stars, z: -2.2)
+            if art == nil {
+                let stars = CALayer(); stars.contents = starField(bounds.size, density: n ? 1.4 : 1)   // ดาวทั้งหมดในภาพเดียว
+                stars.frame = bounds; add(stars, z: -2.2)
+            }
             // ดาวเคราะห์มีวงแหวน (มุมขวาบน โผล่หลังอาคาร) + ดวงจันทร์ (มุมซ้ายล่าง)
             func orb(_ x: CGFloat, _ top: CGFloat, _ r: CGFloat, _ c1: NSColor, _ c2: NSColor, z: CGFloat) {
                 let g = CAGradientLayer(); g.colors = [c1.cgColor, c2.cgColor]
@@ -955,9 +980,11 @@ final class VillageLayerView: NSView {
             let ring = CAShapeLayer(); ring.path = CGPath(ellipseIn: CGRect(x: -78, y: -16, width: 156, height: 32), transform: nil)
             ring.fillColor = nil; ring.strokeColor = NSColor(red: 1, green: 0.85, blue: 0.6, alpha: 0.75).cgColor; ring.lineWidth = 5
             ring.position = CGPoint(x: px, y: Y(pt)); ring.setAffineTransform(CGAffineTransform(rotationAngle: -0.3))
-            orb(px, pt, 44, NSColor(red: 1, green: 0.62, blue: 0.35, alpha: 1), NSColor(red: 0.62, green: 0.3, blue: 0.75, alpha: 1), z: -1.6)
-            add(ring, z: -1.55)
-            orb(40, L.height - 26, 18, NSColor(white: 0.85, alpha: 1), NSColor(white: 0.5, alpha: 1), z: -1.6)
+            if art == nil {
+                orb(px, pt, 44, NSColor(red: 1, green: 0.62, blue: 0.35, alpha: 1), NSColor(red: 0.62, green: 0.3, blue: 0.75, alpha: 1), z: -1.6)
+                add(ring, z: -1.55)
+                orb(40, L.height - 26, 18, NSColor(white: 0.85, alpha: 1), NSColor(white: 0.5, alpha: 1), z: -1.6)
+            }
             // ท่อเชื่อม: ผนังท่อ + ไฟนำทางวิ่งไล่กัน
             rect(L.corridorX - cw / 2 + 2, L.lounge.top - 20, cw - 4, L.height - L.lounge.top, wallTop, radius: 6)
             rect(L.corridorX - cw / 2 + 7, L.lounge.top - 20, cw - 14, L.height - L.lounge.top, corridor, radius: 4)
@@ -974,8 +1001,12 @@ final class VillageLayerView: NSView {
                 ty += 26; k += 1
             }
             // ของลอยในอวกาศรอบสถานี
-            for (s, x, t) in [("🛰️", CGFloat(60), CGFloat(40)), ("☄️", bounds.width * 0.55, CGFloat(28)), ("🛸", bounds.width - 18, L.height * 0.55)] {
-                deco(s, px: 14, h: 22, x: x, top: t, z: -1.5)
+            if let sat = sprite(themed("item_globe")), themed("item_globe") != "item_globe" {   // ดาวเทียมจากชุดภาพ
+                let l = spriteLayer(sat, height: 30); l.position = CGPoint(x: 70, y: Y(48)); l.magnificationFilter = .linear; add(l, z: -1.5)
+            } else {
+                for (s, x, t) in [("🛰️", CGFloat(60), CGFloat(40)), ("☄️", bounds.width * 0.55, CGFloat(28)), ("🛸", bounds.width - 18, L.height * 0.55)] {
+                    deco(s, px: 14, h: 22, x: x, top: t, z: -1.5)
+                }
             }
             // ดาวกะพริบ (Core Animation วาดเอง)
             if animate {
@@ -1504,16 +1535,18 @@ final class VillageLayerView: NSView {
             }
         }
         switch a.state {
-        case .blocked where c.alert == nil: al.setBadge(emojiImage("❗", 16), height: 20)
+        case .blocked where c.alert == nil: al.setBadge(themedIcon("item_alarm") ?? emojiImage("❗", 16), height: 20)
         case .waiting: al.setBadge(emojiImage("❓", 16), height: 20)
         case .idle:
             switch al.rest {
-            case .sleep: al.setBadge(emojiImage("💤", 14), height: 16)
+            case .sleep: al.setBadge(themedIcon("item_battery") ?? emojiImage("💤", 14), height: 16)   // อวกาศ: ชาร์จแบต
             case .sit(let icon): al.setBadge(pixelEmoji(icon, 44), height: 18)
             case .stretch: al.setBadge(nil, height: 0)
             }
-        case .working where a.waitingCommand: al.setBadge(pixelEmoji(a.tool == "Monitor" ? "📡" : "⏳", 44), height: 20)   // รอ command / monitor
-        case .working: al.setBadge(toolProp(a.tool).flatMap { sprite($0) }, height: 20)
+        case .working where a.waitingCommand:   // รอ command / monitor
+            let monitor = a.tool == "Monitor"
+            al.setBadge(themedIcon(monitor ? "item_radar" : "item_spinner") ?? pixelEmoji(monitor ? "📡" : "⏳", 44), height: 20)
+        case .working: al.setBadge(toolProp(a.tool).flatMap { sprite(themed($0)) }, height: 20)
         default: al.setBadge(nil, height: 0)
         }
 

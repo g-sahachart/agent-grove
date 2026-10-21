@@ -50,6 +50,34 @@ PUPS=(shiba corgi - golden husky pug - dalmatian)
 python3 cut_magenta.py --grid=8x3 "$DL/Gemini_Generated_Image_3m9c3x3m9c3x3m9c.jpeg" "$DOGS" \
   $(for p in stand walk walk2; do for b in $PUPS; do [[ $b == - ]] && printf "%s\n" - || echo baby_${b}_$p; done; done)
 
+# 🚀 อวกาศ: ภาพรวม (โดรน 6×3 + เฟอร์นิเจอร์ 3 กลุ่มขนาดไม่เท่ากัน) → แบ่งเป็นส่วนก่อน แล้วตัดทีละส่วน
+SPACE=$OUT/space; TMP=$(mktemp -d)
+python3 -c 'import sys; from PIL import Image
+im = Image.open(sys.argv[1]); k = im.width / 2000
+for n, b in {"drones": (50, 58, 998, 548), "furn1": (1002, 58, 1952, 548), "furn2": (48, 566, 1952, 810), "furn3": (48, 834, 1952, 1060)}.items():
+    im.crop(tuple(round(v * k) for v in b)).save(f"{sys.argv[2]}/{n}.png")' "$DL/Gemini_Generated_Image_mbz74embz74embz7.jpeg" "$TMP"
+python3 cut_magenta.py "$TMP/furn1.png" "$SPACE" sofa_orange sofa_blue window tv_cabinet
+python3 cut_magenta.py "$TMP/furn2.png" "$SPACE" - beanbag bookshelf - - chair_back chair_front
+python3 cut_magenta.py "$TMP/furn3.png" "$SPACE" table_left table_mid table_right tv plant_big console whiteboard watercooler
+python3 cut_magenta.py --grid=6x3 "$TMP/drones.png" "$SPACE" \
+  $(for p in stand walk walk2; do for b in drone ballbot satellite alien catbot core; do echo baby_${b}_$p; done; done)
+# หุ่นยนต์ 8 คอลัมน์: ยืน, ยืนยิ้ม(ข้าม), เดิน, เดิน2, นั่ง, ชาร์จ, ปิดเครื่อง(ข้าม), ตกใจ — catbot/alien ช่องชาร์จวาดผิด → ข้าม
+python3 cut_magenta.py --grid=8x4 "$DL/Gemini_Generated_Image_bzgtolbzgtolbzgt.jpeg" "$SPACE" \
+  ballbot_stand - ballbot_walk ballbot_walk2 ballbot_sit ballbot_sleep - ballbot_alert \
+  tvbot_stand - tvbot_walk tvbot_walk2 tvbot_sit tvbot_sleep - tvbot_alert \
+  catbot_stand - catbot_walk catbot_walk2 catbot_sit - - catbot_alert \
+  alien_stand - alien_walk alien_walk2 alien_sit - - alien_alert
+python3 cut_magenta.py --grid=4x3 "$DL/Gemini_Generated_Image_8qjyxk8qjyxk8qjy.jpeg" "$SPACE" item_terminal item_book item_magnifier \
+  item_toolbox item_folder item_bulb item_radar item_spinner item_battery item_alarm item_mug item_globe
+python3 -c 'import sys; from PIL import Image
+Image.open(sys.argv[1]).convert("RGB").resize((1600, 893), Image.LANCZOS).save(sys.argv[2], quality=88)' \
+  "$DL/Gemini_Generated_Image_10haoa10haoa10ha.jpeg" "$SPACE/background.jpg"
+# ชิ้นที่ใช้ภาพเดียวกัน (ชื่อตามของเดิมในฉาก)
+for pair in plant_big:plant_office whiteboard:picture watercooler:lamp item_mug:mug item_terminal:laptop item_folder:papers; do
+  cp "$SPACE/${pair%%:*}.png" "$SPACE/${pair##*:}.png"
+done
+rm -r "${TMP:?}"
+
 # ภาพที่ Gemini วาดหันซ้าย → กลับให้หันขวา (แอปถือว่าภาพหันขวา แล้วพลิกเองตามทิศที่เดิน)
 python3 -c 'import sys; from PIL import Image, ImageOps
 for f in sys.argv[1:]: ImageOps.mirror(Image.open(f)).save(f)' \
