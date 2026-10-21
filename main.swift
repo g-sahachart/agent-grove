@@ -743,6 +743,10 @@ final class VillageLayerView: NSView {
     private var sceneryKey = ""
     private var sofas: [CALayer] = []     // เฟอร์นิเจอร์ห้องนั่งเล่น (ลำดับตามที่นั่ง k) — เลื่อนไปที่ใหม่เมื่อจัดห้องใหม่
     private var marks: [CALayer] = []     // พรมสีโปรเจกต์ + ป้ายกลุ่ม — วาดใหม่ทุกครั้งที่ที่นั่งเปลี่ยน
+    private var tags: [(key: String, layer: CALayer)] = []   // ป้ายชื่อโปรเจกต์ — ซ่อนไว้ คลิกตัวละครแล้วแสดงเฉพาะโปรเจกต์นั้น
+    private var projectAt: [String: String] = [:]           // animal id (ที่นั่งห้องทำงาน) → project key
+    private var shownProject: String?
+    private var hideTags: DispatchWorkItem?
     private var projects: [Project] = []
     private var animate = false
     private var L = VillageLayout(width: 0, lounging: 0, seated: 0)
@@ -1097,7 +1101,7 @@ final class VillageLayerView: NSView {
 
         L = Village.layout(bounds.width, projects)
         drawScenery()
-        marks.forEach { $0.removeFromSuperlayer() }; marks = []
+        marks.forEach { $0.removeFromSuperlayer() }; marks = []; tags = []
         let cap = (lounge: L.lounge.rows * L.lounge.perRow, hall: L.hall.tables * 2 * L.hall.perSide)
 
         let flat = projects.flatMap { p in p.agents.map { (p, $0) } }
@@ -1178,12 +1182,14 @@ final class VillageLayerView: NSView {
 
         // ป้ายชื่อ (ห้องทำงานเท่านั้น): หนึ่งป้ายต่อโปรเจกต์ต่อแถวที่นั่ง (โต๊ะ + ฝั่งหน้า/หลัง)
         // วางเป็นเลน: ถ้าชนป้ายข้างๆ ในแถวเดียวกัน → ลงเลนถัดไป (แถวหน้าเลื่อนลง, แถวหลังเลื่อนขึ้น)
-        var lines: [String: [(name: String, color: NSColor, xs: [CGFloat], d: (p: CGPoint, front: Bool, table: Int))]] = [:]
+        var lines: [String: [(key: String, name: String, color: NSColor, xs: [CGFloat], d: (p: CGPoint, front: Bool, table: Int))]] = [:]
+        projectAt = [:]
         for (aid, s) in seats where s.hall {
             guard let key = projectOf[aid], let (color, name) = colorOf[key] else { continue }
+            projectAt[aid] = key
             let d = L.hall.seat(s.k), line = "\(d.table)-\(d.front)"
             if let i = lines[line]?.firstIndex(where: { $0.name == name }) { lines[line]![i].xs.append(d.p.x) }
-            else { lines[line, default: []].append((name, color, [d.p.x], d)) }
+            else { lines[line, default: []].append((key, name, color, [d.p.x], d)) }
         }
         let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
         for groups in lines.values {
@@ -1197,7 +1203,7 @@ final class VillageLayerView: NSView {
                 let d = g.d, step: CGFloat = 16
                 let top = d.front ? d.p.y + 6 + CGFloat(lane) * step                     // ใต้เท้าแถวหน้า
                                   : L.hall.tableBase(d.table) - 44 - CGFloat(lane) * step  // บนโต๊ะ (แถวหลัง)
-                tag(g.name, color: g.color, x: cx, width: w, top: top)
+                tag(g.name, key: g.key, color: g.color, x: cx, width: w, top: top)
             }
         }
     }
@@ -1210,14 +1216,37 @@ final class VillageLayerView: NSView {
         layer?.addSublayer(m); marks.append(m)
     }
 
-    private func tag(_ name: String, color: NSColor, x: CGFloat, width: CGFloat, top: CGFloat) {
+    private func tag(_ name: String, key: String, color: NSColor, x: CGFloat, width: CGFloat, top: CGFloat) {
         let t = signLayer(fontSize: 10); t.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
         t.string = " \(name) "; t.bounds = CGRect(x: 0, y: 0, width: width, height: 15)
         t.backgroundColor = color.blended(withFraction: 0.3, of: .black)!.cgColor
         t.borderWidth = 1; t.borderColor = NSColor.black.withAlphaComponent(0.35).cgColor
         t.shadowOpacity = 0.35; t.shadowRadius = 1.5; t.shadowOffset = CGSize(width: 0, height: -1)
         t.position = P(CGPoint(x: x, y: top)); t.zPosition = 85
-        layer?.addSublayer(t); marks.append(t)
+        t.opacity = key == shownProject ? 1 : 0
+        layer?.addSublayer(t); marks.append(t); tags.append((key, t))
+    }
+
+    // คลิกตัวละครในห้องทำงาน → แสดงป้ายชื่อโปรเจกต์ของตัวนั้น (คลิกซ้ำ/คลิกที่ว่าง = ซ่อน, ซ่อนเองหลัง 8 วิ)
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { click(at: convert(event.locationInWindow, from: nil)) }
+    func click(at pt: CGPoint) {
+        let hit = projectAt.first { aid, _ in
+            guard let al = agents[aid] else { return false }
+            let pos = (al.root.presentation() ?? al.root).position   // ตัวที่กำลังเดินวนรอ → ตำแหน่งบนจอจริง
+            return al.body.frame.offsetBy(dx: pos.x, dy: pos.y).insetBy(dx: -4, dy: -4).contains(pt)
+        }?.value
+        showTags(hit == shownProject ? nil : hit)
+    }
+    private func showTags(_ key: String?) {
+        shownProject = key
+        CATransaction.begin(); CATransaction.setAnimationDuration(0.15)
+        for t in tags { t.layer.opacity = t.key == key ? 1 : 0 }
+        CATransaction.commit()
+        hideTags?.cancel(); hideTags = nil
+        guard key != nil else { return }
+        let w = DispatchWorkItem { [weak self] in self?.showTags(nil) }
+        hideTags = w; DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: w)
     }
 
     /// เส้นทาง (พิกัด top): ออกจากห้องต้นทาง → ทางเดินกลาง → เข้าห้องปลายทาง
@@ -1609,6 +1638,10 @@ struct AgentGroveApp: App {
                 let v = VillageLayerView(frame: NSRect(x: 0, y: 0, width: w, height: h))
                 v.layer!.backgroundColor = NSColor(red: 0.87, green: 0.95, blue: 1, alpha: 1).cgColor
                 v.update(projects, animate: ProcessInfo.processInfo.environment["AGENT_GROVE_PACE"] != nil, mode: mode)
+                // AGENT_GROVE_CLICK=x,y → คลิกที่จุดนั้น (พิกัดจากมุมซ้ายบน) ก่อนถ่าย
+                if let c = ProcessInfo.processInfo.environment["AGENT_GROVE_CLICK"]?.split(separator: ",").compactMap({ Double($0) }), c.count == 2 {
+                    v.click(at: CGPoint(x: c[0], y: Double(h) - c[1]))
+                }
                 // AGENT_GROVE_REARRANGE=n → จัดห้องนั่งเล่นใหม่ n รอบก่อนถ่าย (ตรวจผังที่เปลี่ยน)
                 for _ in 0..<(Int(ProcessInfo.processInfo.environment["AGENT_GROVE_REARRANGE"] ?? "") ?? 0) { v.rearrangeLounge() }
                 v.layer!.sublayers = v.layer!.sublayers?.sorted { $0.zPosition < $1.zPosition }  // render(in:) ไม่สน zPosition
